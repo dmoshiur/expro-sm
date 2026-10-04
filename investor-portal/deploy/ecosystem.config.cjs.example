@@ -7,8 +7,8 @@
  *
  * Keep instances = 1 in fork mode: the cron jobs (reminders, reconciliation,
  * overdue marking, token cleanup) run inside the API process and must not be
- * duplicated. To scale out, run one instance with `RUN_JOBS=true` and set
- * RUN_JOBS=false on the rest, or migrate the scheduler to pg-boss.
+ * duplicated. To scale out, run one instance with RUN_JOBS=true and copy this
+ * file with RUN_JOBS=false for the rest, or migrate the scheduler to pg-boss.
  */
 module.exports = {
   apps: [
@@ -28,7 +28,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: '4000',
-        RUN_JOBS: 'true',
+        RUN_JOBS: 'true', // set to false on additional instances
       },
       error_file: '/var/log/investor-portal/api-error.log',
       out_file: '/var/log/investor-portal/api-out.log',

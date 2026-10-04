@@ -112,6 +112,7 @@ npm --workspace server run seed:demo       # 6 investors, investments, some paid
 | `STORAGE_DRIVER`, `LOCAL_STORAGE_DIR`, `CLOUDINARY_*` | `auto` uses Cloudinary when configured, otherwise local disk |
 | `PAYMENT_LINK_TTL_DAYS`, `REMINDER_DAYS_BEFORE`, `REMINDER_ENABLED` | defaults; super admins can override the first two in **Settings** |
 | `CRON_TIMEZONE`, `CRON_OVERDUE_MARK`, `CRON_REMINDERS`, `CRON_RECONCILE`, `CRON_TOKEN_CLEANUP` | cron expressions (all evaluated in Asia/Dhaka) |
+| `RUN_JOBS` | `true` (default) starts the cron jobs in this process; set to `false` on every extra instance when scaling out |
 | `COMPANY_NAME`, `SUPPORT_MOBILE`, `RECEIPT_PREFIX` | branding on the public page, SMS and receipts |
 | `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, `SEED_DEMO` | seed script inputs |
 
@@ -233,7 +234,8 @@ Checklist before going live:
 * `APP_BASE_URL=https://portal.example.com` (SMS links + gateway redirects)
 * Cloudinary credentials set; bKash switched from `sandbox` to `live`
 * Cron jobs run **inside** the API process (node-cron, Asia/Dhaka). Keep exactly **one** PM2 instance
-  in `fork` mode — or move to `pg-boss` if you need several instances (see below)
+  in `fork` mode with `RUN_JOBS=true`; if you must scale out, set `RUN_JOBS=false` on the extra
+  instances so each job still runs exactly once (or move to `pg-boss`, see below)
 * Daily `pg_dump` backup scheduled (see below) and a restore rehearsed at least once
 
 ### In-process jobs

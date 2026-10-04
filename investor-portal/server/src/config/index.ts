@@ -81,6 +81,13 @@ const schema = z.object({
   PAYMENT_LINK_TTL_DAYS: int(7),
   REMINDER_DAYS_BEFORE: int(3),
   REMINDER_ENABLED: bool(true),
+  /**
+   * Scheduled jobs run inside the API process (node-cron, Asia/Dhaka).
+   * Set RUN_JOBS=false on every instance except one when scaling out, or use
+   * JOBS_DISABLED=1 (kept as a deprecated alias for older deployments).
+   */
+  RUN_JOBS: bool(true),
+  JOBS_DISABLED: bool(false),
   CRON_TIMEZONE: z.string().default('Asia/Dhaka'),
   CRON_OVERDUE_MARK: z.string().default('5 0 * * *'),
   CRON_REMINDERS: z.string().default('0 9 * * *'),
@@ -179,6 +186,10 @@ export const config = {
     reminders: env.CRON_REMINDERS,
     reconcile: env.CRON_RECONCILE,
     tokenCleanup: env.CRON_TOKEN_CLEANUP,
+  },
+  /** true when this process should start the cron jobs */
+  get runJobs() {
+    return env.RUN_JOBS && !env.JOBS_DISABLED;
   },
   logLevel: env.LOG_LEVEL,
 } as const;

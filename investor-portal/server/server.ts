@@ -4,7 +4,7 @@
  * Responsibilities:
  *  - start the Express app on PORT (0.0.0.0 so containers/proxies can reach it)
  *  - fail fast when the database is unreachable
- *  - start the scheduled jobs (Asia/Dhaka) unless JOBS_DISABLED=1
+ *  - start the scheduled jobs (Asia/Dhaka) unless RUN_JOBS=false
  *  - shut down gracefully on SIGTERM/SIGINT (PM2 reload friendly)
  */
 import http from 'node:http';
@@ -34,10 +34,10 @@ async function bootstrap(): Promise<void> {
     );
   });
 
-  if (process.env.JOBS_DISABLED !== '1') {
+  if (config.runJobs) {
     startJobs();
   } else {
-    logger.warn('scheduled jobs disabled (JOBS_DISABLED=1)');
+    logger.warn({ env: config.env }, 'scheduled jobs disabled on this instance (RUN_JOBS=false)');
   }
 
   const shutdown = async (signal: string): Promise<void> => {
