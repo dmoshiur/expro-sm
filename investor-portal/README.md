@@ -46,7 +46,7 @@ investor-portal/
 │   │   └── utils/               # money (poisha), dates (Dhaka), errors, encryption, permissions
 │   ├── prisma/                  # schema, SQL migration (RLS + triggers), seed
 │   ├── scripts/                 # prisma launcher, migration applier, db reset
-│   ├── tests/                   # Vitest + Supertest (128 tests)
+│   ├── tests/                   # Vitest + Supertest (136 tests)
 │   └── server.ts                # bootstrap
 ├── client/                      # React + Vite + TS SPA (Tailwind, TanStack Query, RHF + Zod)
 │   └── src/{pages,components,services,store,hooks,lib}
@@ -164,7 +164,7 @@ npm --workspace server run seed:demo       # 6 investors, investments, some paid
 
 Without credentials the API boots with the **mock gateway**: `startPayment` returns a redirect URL to
 the callback itself, and `mockGatewayControl` (test helper) can script completed / failed /
-cancelled / amount-mismatch outcomes. All 128 tests run against this mock.
+cancelled / amount-mismatch outcomes. All 136 tests run against this mock.
 
 ## Database migrations
 
@@ -180,7 +180,7 @@ cancelled / amount-mismatch outcomes. All 128 tests run against this mock.
 ## Tests
 
 ```bash
-npm test                       # server: resets investor_portal_test then runs Vitest (128 tests)
+npm test                       # server: resets investor_portal_test then runs Vitest (136 tests)
 npm --workspace server run test:watch
 npm run typecheck              # both workspaces
 npm run lint                   # both workspaces
@@ -188,10 +188,11 @@ npm run build                  # server tsc + client vite build
 ```
 
 The suite covers installment splitting and remainder, sum validation, token hashing / expiry /
-regeneration, RBAC on **every** admin route (401 / 403 matrix), duplicate callbacks, duplicate
-transaction ids, cancelled and failed payments, amount mismatch, the reconciliation job, manual
-payments and receipts, reminders and dedupe, settings, audit writes, the nominee limit of three, and
-the append-only audit trigger.
+regeneration, RBAC on **every** admin route (401 / 403 matrix incl. PII masking), duplicate
+callbacks, duplicate transaction ids, cancelled and failed payments, amount mismatch, the
+reconciliation job, the overdue-marker and token-cleanup jobs (Dhaka day boundary), manual payments
+and receipts, reminders and dedupe, settings, audit writes, the nominee limit of three, and the
+append-only audit trigger.
 
 ## Deployment (VPS: Nginx + PM2 + HTTPS)
 
@@ -340,7 +341,7 @@ off the database host.
 | Settings (link TTL, reminder lead time, branding) | **Done** | super admin, falls back to env |
 | RBAC matrix documented + tested on every route | **Done** | `docs/permissions.md`, route-inventory test |
 | Postman / OpenAPI | **Done** | `docs/openapi.yaml`, `docs/postman_collection.json` |
-| Automated tests | **Done** | 128 tests across 17 files (Vitest + Supertest) |
+| Automated tests | **Done** | 136 tests across 18 files (Vitest + Supertest) |
 | Deployment docs (Nginx, PM2, TLS, backup/restore) | **Done** | this README + `deploy/` |
 | pg-boss scheduler | **Partial** | interface in place and swappable; node-cron used by default |
 | Nagad / card gateways | **Not done** | adapter interface exists; only bKash implemented (out of scope for v1) |
