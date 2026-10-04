@@ -35,7 +35,7 @@ export interface AuditEntry {
 function jsonSafe(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === undefined || value === null) return undefined;
   try {
-    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+    return JSON.parse(JSON.stringify(value, (_key, val) => (typeof val === 'bigint' ? val.toString() : val))) as Prisma.InputJsonValue;
   } catch {
     return { unserializable: true } as Prisma.InputJsonValue;
   }
