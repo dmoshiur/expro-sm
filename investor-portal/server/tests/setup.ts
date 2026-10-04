@@ -8,3 +8,8 @@
  */
 process.env.NODE_ENV = 'test';
 process.env.TZ = 'Asia/Dhaka';
+
+// Rate limiting is exercised by a dedicated test that re-imports the app with
+// limits enabled; everywhere else it would make the suite flaky (every request
+// in a test file shares one client IP).
+process.env.RATE_LIMIT_DISABLED = '1';

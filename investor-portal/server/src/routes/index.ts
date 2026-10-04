@@ -11,8 +11,14 @@
 import { Router } from 'express';
 import { prisma } from '../config/prisma';
 import { asyncHandler } from '../utils/asyncHandler';
+import { authRouter } from './auth.routes';
+import { adminRouter } from './admin.routes';
 
 export const apiRouter = Router();
+
+// feature routers
+apiRouter.use('/auth', authRouter);
+apiRouter.use('/admins', adminRouter);
 
 /** Liveness + database readiness probe. */
 apiRouter.get(
