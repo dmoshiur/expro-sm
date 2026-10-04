@@ -10,6 +10,7 @@ import { createCronScheduler, type Scheduler } from './scheduler';
 import { overdueInstallmentsJob } from './overdueInstallments.job';
 import { tokenCleanupJob } from './tokenCleanup.job';
 import { reconcilePaymentsJob } from './reconcilePayments.job';
+import { reminderJob } from './reminder.job';
 
 export const scheduler: Scheduler = createCronScheduler();
 
@@ -25,6 +26,14 @@ export function registerJobs(): void {
     schedule: config.cron.overdueMark,
     timezone: config.cron.timezone,
     handler: overdueInstallmentsJob,
+  });
+
+  // 09:00 Dhaka - due soon + overdue SMS reminders (deduped per installment)
+  scheduler.register({
+    name: 'reminders',
+    schedule: config.cron.reminders,
+    timezone: config.cron.timezone,
+    handler: reminderJob,
   });
 
   // every 15 minutes - re-query bKash for stuck INITIATED/PENDING payments

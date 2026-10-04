@@ -61,6 +61,10 @@ export const AuditAction = {
   PAYMENT_RECONCILED: 'payment.reconciled',
   RECEIPT_DOWNLOADED: 'receipt.downloaded',
 
+  // reminders
+  REMINDER_SENT: 'reminder.sent',
+  REMINDER_SKIPPED: 'reminder.skipped',
+
   // system
   JOB_RUN: 'system.job_run',
   SETTING_UPDATED: 'system.setting_updated',
@@ -77,6 +81,8 @@ export const AuditEntity = {
   INSTALLMENT: 'Installment',
   PAYMENT: 'Payment',
   SETTING: 'Setting',
+  REPORT: 'Report',
+  JOB: 'Job',
   SMS: 'SmsLog',
 } as const;
 
