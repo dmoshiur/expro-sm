@@ -1,0 +1,45 @@
+# deps
+node_modules/
+.pnp/
+.pnp.js
+
+# builds
+dist/
+build/
+client/dist/
+server/dist/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# env / secrets - NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# logs / runtime
+logs/
+*.log
+npm-debug.log*
+pids/
+*.pid
+*.seed
+.tmp/
+tmp/
+local-storage/
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# test output
+test-results/
+*.lcov
+
+# local postgres helper data (kept OUTSIDE the repo, this is a safety net)
+pgdata/
