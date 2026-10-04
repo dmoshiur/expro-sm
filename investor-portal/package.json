@@ -1,0 +1,34 @@
+{
+  "name": "investor-portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Investor Installment Portal - admin-only investment & installment collection system (bKash tokenized checkout, SaaS-grade security)",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "postinstall": "npm --workspace server run prisma:generate --if-present || echo \"[postinstall] prisma client generation skipped - run: npm --workspace server run prisma:generate\"",
+    "db:start": "./scripts/local-postgres.sh start",
+    "db:stop": "./scripts/local-postgres.sh stop",
+    "dev": "concurrently -k -n server,client -c blue,green \"npm --workspace server run dev\" \"npm --workspace client run dev\"",
+    "dev:server": "npm --workspace server run dev",
+    "dev:client": "npm --workspace client run dev",
+    "build": "npm --workspace server run build && npm --workspace client run build",
+    "test": "npm --workspace server run test && npm --workspace client run test",
+    "lint": "npm --workspace server run lint && npm --workspace client run lint",
+    "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck",
+    "migrate:dev": "npm --workspace server run migrate:dev",
+    "migrate:deploy": "npm --workspace server run migrate:deploy",
+    "seed": "npm --workspace server run seed",
+    "seed:demo": "npm --workspace server run seed:demo",
+    "db:reset": "npm --workspace server run db:reset",
+    "test:client": "npm --workspace client run test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

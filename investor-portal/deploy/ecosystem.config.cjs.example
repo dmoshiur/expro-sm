@@ -1,0 +1,39 @@
+/**
+ * PM2 process definition.
+ *
+ *   sudo npm i -g pm2
+ *   cp deploy/ecosystem.config.cjs.example deploy/ecosystem.config.cjs
+ *   pm2 start deploy/ecosystem.config.cjs && pm2 save && pm2 startup
+ *
+ * Keep instances = 1 in fork mode: the cron jobs (reminders, reconciliation,
+ * overdue marking, token cleanup) run inside the API process and must not be
+ * duplicated. To scale out, run one instance with RUN_JOBS=true and copy this
+ * file with RUN_JOBS=false for the rest, or migrate the scheduler to pg-boss.
+ */
+module.exports = {
+  apps: [
+    {
+      name: 'investor-portal-api',
+      cwd: '/var/www/investor-portal/server',
+      script: 'node_modules/.bin/tsx',
+      args: 'server.ts',
+      // for a compiled deployment use:
+      // script: 'dist/server.js',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      max_memory_restart: '512M',
+      kill_timeout: 8000,
+      wait_ready: false,
+      env: {
+        NODE_ENV: 'production',
+        PORT: '4000',
+        RUN_JOBS: 'true', // set to false on additional instances
+      },
+      error_file: '/var/log/investor-portal/api-error.log',
+      out_file: '/var/log/investor-portal/api-out.log',
+      merge_logs: true,
+      time: true,
+    },
+  ],
+};
