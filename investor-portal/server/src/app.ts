@@ -18,6 +18,7 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { requestId } from './middleware/requestId';
 import { requestLogger } from './middleware/requestLogger';
 import { apiRouter } from './routes';
+import { isOriginAllowed } from './utils/origin';
 import { logger } from './utils/logger';
 
 export function createApp(): Express {
@@ -49,14 +50,16 @@ export function createApp(): Express {
   );
 
   const corsOptions: CorsOptions = {
-    // Strict allowlist. Requests without an Origin (server-to-server, curl,
-    // gateway webhooks) are allowed because they cannot be CSRF'd by a browser.
+    // Strict allowlist (exact origins, plus optional single-label wildcards such
+    // as https://*.example.com for ephemeral dev/preview hosts). Requests without
+    // an Origin (server-to-server, curl, gateway webhooks) are allowed because
+    // they cannot be CSRF'd by a browser.
     origin(origin, callback) {
-      if (!origin || config.corsOrigins.includes(origin)) {
+      if (isOriginAllowed(origin, config.corsOrigins)) {
         callback(null, true);
         return;
       }
-      logger.warn({ origin }, 'blocked by CORS');
+      logger.warn({ origin, allowed: config.corsOrigins.length }, 'blocked by CORS');
       callback(new Error('Not allowed by CORS'));
     },
     credentials: true,

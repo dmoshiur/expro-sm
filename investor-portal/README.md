@@ -105,7 +105,7 @@ npm --workspace server run seed:demo       # 6 investors, investments, some paid
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL` | token signing and lifetimes (access 15 m, refresh 30 d by default) |
 | `COOKIE_DOMAIN`, `COOKIE_SECURE` | cookie scoping (`secure` forced on in production) |
 | `ENCRYPTION_KEY` | 32-byte hex key for AES-256-GCM (NID numbers, TOTP secrets) — **rotating it invalidates stored NIDs/2FA secrets** |
-| `CORS_ORIGINS` | comma-separated allowlist (strict; anything else is rejected with 403) |
+| `CORS_ORIGINS` | comma-separated allowlist, exact origins in production. A **single-label wildcard** is supported for ephemeral hosts (e.g. `https://*.e2b.app` for sandbox previews) — it never matches the bare domain or crosses a dot, so it cannot be widened. Anything else is rejected with 403 |
 | `RATE_LIMIT_DISABLED` | set to `1` in CI only |
 | `BKASH_MODE`, `BKASH_BASE_URL`, `BKASH_APP_KEY`, `BKASH_APP_SECRET`, `BKASH_USERNAME`, `BKASH_PASSWORD`, `BKASH_CALLBACK_URL`, `BKASH_WEBHOOK_ENABLED`, `BKASH_WEBHOOK_SECRET` | bKash Tokenized Checkout. Without credentials the deterministic **mock gateway** is used, so development and tests work offline |
 | `SMS_PROVIDER`, `SMS_API_KEY`, `SMS_API_URL`, `SMS_SENDER_ID` | `console` (dev, prints + keeps an in-memory outbox), `bulksmsbd`, `alpha` |
@@ -280,6 +280,9 @@ off the database host.
   reconciliation job that can safely run alongside a callback.
 * **Least privilege:** VIEWER sees masked mobiles and no NID; ACCOUNTANT cannot touch nominees,
   admins or settings; only SUPER_ADMIN can read audit logs, NID scans and change settings.
+* **CORS and CSRF share one allowlist matcher** (`src/utils/origin.ts`): exact origins plus optional
+  single-label wildcards for ephemeral dev/preview hosts. Requests without an `Origin` header
+  (curl, cron, gateway webhooks) pass because they carry no browser session.
 * Secrets live in `server/.env` only (never in the client), and log output masks mobile numbers and
   never prints tokens, passwords or gateway secrets.
 

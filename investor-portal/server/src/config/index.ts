@@ -194,5 +194,11 @@ export const config = {
   logLevel: env.LOG_LEVEL,
 } as const;
 
+/**
+ * True when a browser origin may talk to the API (see utils/origin.ts).
+ * Exported here so middleware shares one implementation with CORS itself.
+ */
+export { isOriginAllowed } from '../utils/origin';
+
 export type AppConfig = typeof config;
 export default config;

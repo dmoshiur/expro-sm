@@ -13,6 +13,7 @@
 import type { RequestHandler } from 'express';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { isOriginAllowed } from '../utils/origin';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -31,8 +32,9 @@ export const csrfProtection: RequestHandler = (req, res, next) => {
     return;
   }
 
+  // Same allowlist as CORS (exact origins + single-label wildcards in dev).
   const origin = req.headers.origin;
-  if (origin && !config.corsOrigins.includes(origin)) {
+  if (!isOriginAllowed(origin, config.corsOrigins)) {
     logger.warn({ origin, url: req.originalUrl, requestId: req.id }, 'CSRF protection rejected request');
     res.status(403).json({
       error: { code: 'FORBIDDEN', message: 'Origin not allowed', requestId: req.id ?? 'unknown' },
