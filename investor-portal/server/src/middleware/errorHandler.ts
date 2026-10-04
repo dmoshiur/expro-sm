@@ -78,6 +78,14 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     status = (err as { status?: number }).status ?? 400;
     code = 'BAD_REQUEST';
     message = (err as Error).message;
+  } else if (isMulterError(err)) {
+    const multerCode = (err as { code: string }).code;
+    status = multerCode === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    code = multerCode === 'LIMIT_FILE_SIZE' ? 'PAYLOAD_TOO_LARGE' : 'VALIDATION_ERROR';
+    message =
+      multerCode === 'LIMIT_FILE_SIZE'
+        ? 'File is too large. The maximum size is 2 MB'
+        : 'Upload rejected: check the file type and size (JPG/PNG, max 2 MB)';
   } else if (err instanceof Error && /payload too large|entity too large/i.test(err.message)) {
     status = 413;
     code = 'PAYLOAD_TOO_LARGE';
@@ -106,6 +114,15 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   const body: ErrorBody = { error: { code, message, requestId } };
   if (details) body.error.details = details;
   res.status(status).json(body);
+}
+
+function isMulterError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: string }).name === 'MulterError' &&
+    typeof (err as { code?: unknown }).code === 'string'
+  );
 }
 
 function isBodyParserError(err: unknown): boolean {

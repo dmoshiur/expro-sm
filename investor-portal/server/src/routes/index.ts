@@ -13,12 +13,18 @@ import { prisma } from '../config/prisma';
 import { asyncHandler } from '../utils/asyncHandler';
 import { authRouter } from './auth.routes';
 import { adminRouter } from './admin.routes';
+import { investorRouter } from './investor.routes';
+import { auditRouter } from './audit.routes';
+import { fileRouter } from './file.routes';
 
 export const apiRouter = Router();
 
 // feature routers
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/admins', adminRouter);
+apiRouter.use('/investors', investorRouter);
+apiRouter.use('/audit-logs', auditRouter);
+apiRouter.use('/files', fileRouter);
 
 /** Liveness + database readiness probe. */
 apiRouter.get(

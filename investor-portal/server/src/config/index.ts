@@ -64,6 +64,8 @@ const schema = z.object({
   BKASH_WEBHOOK_ENABLED: bool(false),
   BKASH_WEBHOOK_SECRET: z.string().optional().default(''),
 
+  STORAGE_DRIVER: z.enum(['auto', 'cloudinary', 'local']).default('auto'),
+  LOCAL_STORAGE_DIR: z.string().default('local-storage'),
   CLOUDINARY_CLOUD_NAME: z.string().optional().default(''),
   CLOUDINARY_API_KEY: z.string().optional().default(''),
   CLOUDINARY_API_SECRET: z.string().optional().default(''),
@@ -143,6 +145,11 @@ export const config = {
     get configured() {
       return Boolean(env.BKASH_APP_KEY && env.BKASH_APP_SECRET && env.BKASH_USERNAME && env.BKASH_PASSWORD);
     },
+  },
+  storage: {
+    driver: env.STORAGE_DRIVER,
+    localDir: env.LOCAL_STORAGE_DIR,
+    maxUploadBytes: 2 * 1024 * 1024,
   },
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
