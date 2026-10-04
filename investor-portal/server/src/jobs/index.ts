@@ -9,6 +9,7 @@ import { config } from '../config';
 import { createCronScheduler, type Scheduler } from './scheduler';
 import { overdueInstallmentsJob } from './overdueInstallments.job';
 import { tokenCleanupJob } from './tokenCleanup.job';
+import { reconcilePaymentsJob } from './reconcilePayments.job';
 
 export const scheduler: Scheduler = createCronScheduler();
 
@@ -24,6 +25,14 @@ export function registerJobs(): void {
     schedule: config.cron.overdueMark,
     timezone: config.cron.timezone,
     handler: overdueInstallmentsJob,
+  });
+
+  // every 15 minutes - re-query bKash for stuck INITIATED/PENDING payments
+  scheduler.register({
+    name: 'reconcile-payments',
+    schedule: config.cron.reconcile,
+    timezone: config.cron.timezone,
+    handler: reconcilePaymentsJob,
   });
 
   // 02:30 Dhaka - expire stale payment links, prune old SMS logs

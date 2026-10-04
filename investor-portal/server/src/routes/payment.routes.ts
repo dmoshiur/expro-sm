@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import * as paymentLinkController from '../controllers/paymentLink.controller';
+import * as paymentController from '../controllers/payment.controller';
 import { requireAuth, requirePermission } from '../middleware/auth';
 import { csrfProtection } from '../middleware/csrf';
 import { sensitiveLimiter } from '../middleware/rateLimit';
@@ -57,6 +58,57 @@ paymentRouter.get(
   requirePermission('payment:read'),
   validate({ query: smsLogQuerySchema }),
   asyncHandler(paymentLinkController.listSmsLogs),
+);
+
+/** Record a cash / bank / other manual payment (ACCOUNTANT and above). */
+paymentRouter.post(
+  '/installments/:id/manual',
+  requirePermission('payment:manual'),
+  validate({
+    params: installmentParam,
+    body: z.object({
+      amount: z.union([z.string(), z.number()]).optional(),
+      method: z.enum(['CASH', 'BANK', 'OTHER']),
+      reference: z.string().trim().min(3, 'A reference is required').max(120),
+      note: z.string().trim().max(500).optional(),
+      paidAt: z.string().datetime().optional(),
+    }),
+  }),
+  asyncHandler(paymentController.recordManual),
+);
+
+/** Payment list with filters (status, method, gateway, investor, dates, search). */
+paymentRouter.get(
+  '/',
+  requirePermission('payment:read'),
+  validate({
+    query: z.object({
+      status: z.enum(['INITIATED', 'PENDING', 'SUCCESS', 'FAILED', 'CANCELLED', 'REFUNDED']).optional(),
+      method: z.enum(['BKASH', 'CASH', 'BANK', 'OTHER']).optional(),
+      gateway: z.enum(['BKASH', 'NAGAD', 'MANUAL']).optional(),
+      investorId: z.string().uuid().optional(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+      search: z.string().trim().max(120).optional(),
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(200).default(50),
+    }),
+  }),
+  asyncHandler(paymentController.list),
+);
+
+paymentRouter.get(
+  '/:id/receipt.pdf',
+  requirePermission('payment:read'),
+  validate({ params: z.object({ id: z.string().uuid('Invalid payment id') }) }),
+  asyncHandler(paymentController.downloadReceipt),
+);
+
+paymentRouter.get(
+  '/:id',
+  requirePermission('payment:read'),
+  validate({ params: z.object({ id: z.string().uuid('Invalid payment id') }) }),
+  asyncHandler(paymentController.detail),
 );
 
 export default paymentRouter;
