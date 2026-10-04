@@ -45,6 +45,13 @@ export function linkTtlDays(): number {
   return config.paymentLink.ttlDays > 0 ? config.paymentLink.ttlDays : 7;
 }
 
+/** Setting-aware variant used when creating a link (falls back to config). */
+export async function effectiveLinkTtlDays(): Promise<number> {
+  const { getNumberSetting, SETTING_KEYS } = await import('../settings/settings.service');
+  const value = await getNumberSetting(SETTING_KEYS.paymentLinkTtlDays);
+  return value > 0 ? value : linkTtlDays();
+}
+
 /**
  * Issues a fresh token for an installment. `previousHash` is replaced, so any
  * link that was shared before stops working immediately.
@@ -55,7 +62,7 @@ export async function generateLink(
 ): Promise<GeneratedLink> {
   const token = randomToken(32);
   const tokenHash = sha256(token);
-  const expiresAt = addDhakaDays(new Date(), options.ttlDays ?? linkTtlDays());
+  const expiresAt = addDhakaDays(new Date(), options.ttlDays ?? (await effectiveLinkTtlDays()));
 
   await (options.tx ?? prisma).installment.update({
     where: { id: installmentId },

@@ -1,0 +1,874 @@
+openapi: 3.0.3
+info:
+  title: Investor Installment Portal API
+  version: 1.0.0
+  description: |
+    Admin-only installment collection API for Bangladesh.
+
+    * Authentication uses the httpOnly `ip_access` cookie (short-lived JWT) plus an
+      `ip_refresh` cookie for rotation. API clients may instead send `Authorization: Bearer <access token>`.
+    * Authorisation follows the RBAC matrix in `docs/permissions.md`; the route-inventory test
+      (`server/tests/rbac.routes.test.ts`) proves every route is protected.
+    * **Money is always an integer number of poisha** (1 BDT = 100 poisha) and is returned as a
+      string so JavaScript never loses precision.
+    * All dates are ISO-8601 strings; business dates (due dates, report buckets) are computed in Asia/Dhaka.
+  license:
+    name: Proprietary
+servers:
+  - url: http://localhost:4000
+    description: Local development
+  - url: https://portal.example.com
+    description: Production
+tags:
+  - name: System
+  - name: Auth
+  - name: Admins
+  - name: Investors
+  - name: Investments
+  - name: Installments
+  - name: Payment links
+  - name: Payments
+  - name: Reports
+  - name: Audit
+  - name: Settings
+  - name: Public
+security:
+  - cookieAuth: []
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: ip_access
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: FORBIDDEN }
+            message: { type: string }
+            details:
+              type: array
+              items: { type: object }
+            requestId: { type: string }
+    Paginated:
+      type: object
+      properties:
+        items: { type: array, items: { type: object } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+        totalPages: { type: integer }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, example: admin@investorportal.local }
+        password: { type: string, example: Admin@12345 }
+        totp: { type: string, description: 6-digit code, only when 2FA is enabled }
+    InvestorCreate:
+      type: object
+      required: [name, mobile]
+      properties:
+        name: { type: string, example: Md. Rahim Uddin }
+        mobile: { type: string, example: "01712345678" }
+        nid: { type: string, description: stored AES-256-GCM encrypted, unique by hash }
+        address: { type: string }
+        notes: { type: string }
+    Nominee:
+      type: object
+      properties:
+        name: { type: string }
+        relation: { type: string, example: Spouse }
+        mobile: { type: string }
+        nid: { type: string }
+        sharePercent: { type: number, example: 50 }
+    InvestmentCreate:
+      type: object
+      required: [investorId, totalAmount, installmentCount, firstDueDate, interval]
+      properties:
+        investorId: { type: string, format: uuid }
+        totalAmount: { type: string, example: "120000" }
+        installmentCount: { type: integer, example: 12 }
+        firstDueDate: { type: string, format: date, example: "2026-11-05" }
+        interval:
+          type: object
+          properties:
+            unit: { type: string, enum: [DAY, WEEK, MONTH, YEAR] }
+            value: { type: integer, example: 1 }
+        notes: { type: string }
+    ManualPayment:
+      type: object
+      required: [method, reference]
+      properties:
+        amount: { type: string, description: BDT; defaults to the full outstanding amount }
+        method: { type: string, enum: [CASH, BANK, OTHER] }
+        reference: { type: string, description: "receipt / bank slip reference (min 3 chars)" }
+        note: { type: string }
+        paidAt: { type: string, format: date-time }
+  responses:
+    Unauthorized:
+      description: 401 – missing or invalid session
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: 403 – the role lacks this permission
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationFailed:
+      description: 400 – request failed Zod validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+paths:
+  /api/health:
+    get:
+      tags: [System]
+      summary: Liveness and database readiness probe
+      security: []
+      responses:
+        '200': { description: '{ status: ok, database: up, latencyMs }' }
+        '503': { description: Database unreachable }
+
+  # ---------------------------------------------------------------- auth ----
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Sign in (rate limited, account lockout after repeated failures)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: |
+            Either `{ twoFactorRequired: true }` (send the same request with `totp`) or
+            `{ admin, mustEnable2FA }` with `Set-Cookie: ip_access`, `ip_refresh`.
+        '401': { description: Invalid credentials }
+        '423': { description: Account temporarily locked }
+        '429': { description: Too many attempts }
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate the session using the refresh cookie
+      responses:
+        '200': { description: New `ip_access` / `ip_refresh` cookies issued }
+        '401': { description: No active session; token reuse revokes the whole family }
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the session and clear cookies
+      responses:
+        '200': { description: '{ ok: true }' }
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current admin profile
+      responses:
+        '200': { description: '{ admin, mustEnable2FA }' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change own password (revokes every session, audited)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, description: min 10 chars, one letter, one number }
+      responses:
+        '200': { description: '{ ok: true }' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { description: Current password incorrect }
+  /api/auth/2fa/setup:
+    post:
+      tags: [Auth]
+      summary: Start TOTP enrolment
+      responses:
+        '200': { description: '{ otpauthUrl, qrDataUrl }' }
+  /api/auth/2fa/verify:
+    post:
+      tags: [Auth]
+      summary: Confirm a 6-digit code and enable 2FA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, example: "123456" }
+      responses:
+        '200': { description: '{ ok: true, twoFAEnabled: true }' }
+        '401': { description: Invalid or expired code }
+  /api/auth/2fa/disable:
+    post:
+      tags: [Auth]
+      summary: Disable 2FA (password required, audited)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        '200': { description: '{ ok: true, twoFAEnabled: false }' }
+
+  # -------------------------------------------------------------- admins ----
+  /api/admins:
+    get:
+      tags: [Admins]
+      summary: List admins (SUPER_ADMIN only)
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - { name: role, in: query, schema: { type: string, enum: [SUPER_ADMIN, ACCOUNTANT, VIEWER] } }
+        - { name: isActive, in: query, schema: { type: string, enum: ['true', 'false'] } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: Paginated admin list (never includes password hashes or 2FA secrets)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paginated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admins]
+      summary: Create an admin (SUPER_ADMIN only, audited)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, role]
+              properties:
+                name: { type: string }
+                email: { type: string }
+                password: { type: string }
+                role: { type: string, enum: [SUPER_ADMIN, ACCOUNTANT, VIEWER] }
+      responses:
+        '201': { description: '{ admin }' }
+        '409': { description: Email already in use }
+  /api/admins/{id}:
+    patch:
+      tags: [Admins]
+      summary: Update name, role or active flag (audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                role: { type: string, enum: [SUPER_ADMIN, ACCOUNTANT, VIEWER] }
+                isActive: { type: boolean }
+      responses:
+        '200': { description: '{ admin }' }
+        '400': { description: Cannot disable or demote yourself }
+  /api/admins/{id}/reset-password:
+    post:
+      tags: [Admins]
+      summary: Set a new password for an admin (audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newPassword]
+              properties:
+                newPassword: { type: string }
+      responses:
+        '200': { description: '{ ok: true }' }
+  /api/admins/{id}/reset-2fa:
+    post:
+      tags: [Admins]
+      summary: Clear 2FA so the admin can re-enrol (audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ ok: true, pendingSecret }' }
+  /api/admins/{id}/unlock:
+    post:
+      tags: [Admins]
+      summary: Clear lockout and failed-login counters (audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ ok: true }' }
+
+  # ----------------------------------------------------------- investors ----
+  /api/investors:
+    get:
+      tags: [Investors]
+      summary: List investors (search, status, sorting, pagination)
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, INACTIVE] } }
+        - { name: sort, in: query, schema: { type: string, example: 'createdAt:desc' } }
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: pageSize, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Paginated investors; mobile/NID are masked for non super admins
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paginated' }
+    post:
+      tags: [Investors]
+      summary: Create an investor (mobile and NID-hash unique)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvestorCreate' }
+      responses:
+        '201': { description: '{ investor }' }
+        '409': { description: Mobile or NID already registered }
+  /api/investors/{id}:
+    get:
+      tags: [Investors]
+      summary: Investor profile incl. nominees, investments and recent SMS
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ investor }' }
+        '404': { description: Not found }
+    patch:
+      tags: [Investors]
+      summary: Update the investor profile (audited with old/new values)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvestorCreate' }
+      responses:
+        '200': { description: '{ investor }' }
+  /api/investors/{id}/nominees:
+    put:
+      tags: [Investors]
+      summary: Replace nominees (max 3, shares must total exactly 100)
+      description: SUPER_ADMIN only. Enforced in the service **and** by DB triggers.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nominees]
+              properties:
+                nominees:
+                  type: array
+                  maxItems: 3
+                  items: { $ref: '#/components/schemas/Nominee' }
+      responses:
+        '200': { description: '{ investor }' }
+        '422': { description: More than three nominees or shares do not total 100 }
+  /api/investors/{id}/deactivate:
+    post:
+      tags: [Investors]
+      summary: Soft-delete (stops payment links and reminders, keeps history)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ investor }' }
+  /api/investors/{id}/reactivate:
+    post:
+      tags: [Investors]
+      summary: Reactivate an investor
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ investor }' }
+  /api/investors/{id}/photo:
+    post:
+      tags: [Investors]
+      summary: Upload a photo (JPG/PNG, max 2 MB; public asset)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200': { description: '{ investor }' }
+        '413': { description: File larger than 2 MB }
+        '415': { description: Unsupported file type }
+  /api/investors/{id}/nid-scan:
+    post:
+      tags: [Investors]
+      summary: Upload a private NID scan (SUPER_ADMIN only)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200': { description: '{ investor }' }
+  /api/investors/{id}/nid-scan-url:
+    get:
+      tags: [Investors]
+      summary: Short-lived signed URL for the private NID scan (SUPER_ADMIN only, audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ url, expiresIn }' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No scan on file }
+
+  # --------------------------------------------------------- investments ----
+  /api/investments:
+    get:
+      tags: [Investments]
+      summary: List investments with collected/outstanding progress
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, COMPLETED, CANCELLED] } }
+        - { name: investorId, in: query, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: pageSize, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paginated' }
+    post:
+      tags: [Investments]
+      summary: Create an investment and split it into installments
+      description: |
+        The total is split into equal poisha amounts and **the remainder goes to the LAST
+        installment**, so the sum always equals the total exactly. A deferred DB constraint
+        validates sum(installments.amount) = investment.totalAmount and the count.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvestmentCreate' }
+      responses:
+        '201': { description: '{ investment } with the generated installments' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '404': { description: Investor not found or inactive }
+  /api/investments/{id}:
+    get:
+      tags: [Investments]
+      summary: Investment detail with every installment
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ investment }' }
+    patch:
+      tags: [Investments]
+      summary: Update notes or status
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ investment }' }
+  /api/investments/{id}/cancel:
+    post:
+      tags: [Investments]
+      summary: Cancel an investment (reason required, audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 3 }
+      responses:
+        '200': { description: '{ investment }' }
+        '409': { description: Payments already received – refund or waive first }
+  /api/investments/{id}/installments:
+    put:
+      tags: [Investments]
+      summary: Edit the schedule before any payment has been received
+      description: |
+        Either an overall adjustment (`totalAmount`, `firstDueDate`, `interval` regenerates the
+        schedule) or per-installment edits (`installments[]`) - the sum must still match the total.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                totalAmount: { type: string }
+                firstDueDate: { type: string, format: date }
+                interval:
+                  type: object
+                  properties:
+                    unit: { type: string, enum: [DAY, WEEK, MONTH, YEAR] }
+                    value: { type: integer }
+                installments:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string, format: uuid }
+                      amount: { type: string }
+                      dueDate: { type: string, format: date }
+      responses:
+        '200': { description: '{ investment }' }
+        '409': { description: A payment already exists – the schedule is frozen }
+
+  # --------------------------------------------------------- installments ----
+  /api/installments:
+    get:
+      tags: [Installments]
+      summary: List installments (status, due window, investor)
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: investorId, in: query, schema: { type: string, format: uuid } }
+        - { name: investmentId, in: query, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Paginated installments with totals }
+  /api/installments/{id}/waive:
+    post:
+      tags: [Installments]
+      summary: Waive an installment (reason required, audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 3 }
+      responses:
+        '200': { description: '{ investment }' }
+        '409': { description: Already paid or waived }
+  /api/installments/{id}/cancel:
+    post:
+      tags: [Installments]
+      summary: Cancel an installment (reason required, audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ investment }' }
+  /api/installments/{id}/reopen:
+    post:
+      tags: [Installments]
+      summary: Reopen a waived or cancelled installment (reason required, audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ investment }' }
+
+  # ------------------------------------------------------- payment links ----
+  /api/payments/installments/{id}/link/regenerate:
+    post:
+      tags: [Payment links]
+      summary: Mint a new payment link (invalidates the previous one)
+      description: The token is generated server-side, only its SHA-256 hash is stored.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sendSms: { type: boolean, default: false }
+      responses:
+        '200': { description: '{ url, expiresAt, sms? }' }
+        '409': { description: Installment is not payable }
+  /api/payments/installments/{id}/link/send:
+    post:
+      tags: [Payment links]
+      summary: Generate a fresh link and SMS it to the investor
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ url, expiresAt, sms: { success, provider, error? } }' }
+  /api/payments/investments/{id}/links/send:
+    post:
+      tags: [Payment links]
+      summary: Bulk-send links for every payable installment of an investment
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ sent, failed, skipped, results[] }' }
+  /api/payments/sms-logs:
+    get:
+      tags: [Payment links]
+      summary: SMS delivery log (destination masked unless SUPER_ADMIN)
+      parameters:
+        - { name: investorId, in: query, schema: { type: string, format: uuid } }
+        - { name: installmentId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string, enum: [QUEUED, SENT, FAILED] } }
+        - { name: purpose, in: query, schema: { type: string, enum: [PAYMENT_LINK, REMINDER_DUE, REMINDER_OVERDUE, MANUAL, BULK] } }
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Paginated SMS log }
+
+  # ------------------------------------------------------------ payments ----
+  /api/payments/installments/{id}/manual:
+    post:
+      tags: [Payments]
+      summary: Record a cash / bank / other payment (ACCOUNTANT or SUPER_ADMIN)
+      description: |
+        A reference is mandatory. The amount may not exceed the outstanding balance, and the
+        installment is credited in the same transaction that creates the payment row.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManualPayment' }
+      responses:
+        '201': { description: '{ paymentId, receiptNumber, status, paidAmount }' }
+        '422': { description: Amount exceeds the outstanding balance }
+  /api/payments:
+    get:
+      tags: [Payments]
+      summary: List payments with filters
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [INITIATED, PENDING, SUCCESS, FAILED, CANCELLED, REFUNDED] } }
+        - { name: method, in: query, schema: { type: string, enum: [BKASH, CASH, BANK, OTHER] } }
+        - { name: gateway, in: query, schema: { type: string, enum: [BKASH, NAGAD, MANUAL] } }
+        - { name: investorId, in: query, schema: { type: string, format: uuid } }
+        - { name: from, in: query, schema: { type: string } }
+        - { name: to, in: query, schema: { type: string } }
+        - { name: search, in: query, description: trx id, receipt, gateway id, reference or investor name, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: pageSize, in: query, schema: { type: integer, maximum: 200 } }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paginated' }
+  /api/payments/{id}:
+    get:
+      tags: [Payments]
+      summary: Payment detail with the installment
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ payment }' }
+        '404': { description: Not found }
+  /api/payments/{id}/receipt.pdf:
+    get:
+      tags: [Payments]
+      summary: Download the PDF receipt (SUCCESS only, download is audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200':
+          description: "application/pdf (inline when the client sends Accept: application/pdf)"
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '409': { description: The payment did not succeed }
+
+  # ------------------------------------------------------------- reports ----
+  /api/dashboard:
+    get:
+      tags: [Reports]
+      summary: Dashboard KPIs, 12-month collection trend and latest activity
+      parameters:
+        - { name: months, in: query, schema: { type: integer, minimum: 1, maximum: 36, default: 12 } }
+      responses:
+        '200':
+          description: |
+            `{ totals, counts, collection, due, collectionByMonth[], upcomingInstallments[], recentPayments[] }`
+          content:
+            application/json:
+              schema: { type: object }
+  /api/reports/due:
+    get:
+      tags: [Reports]
+      summary: Due & overdue book with totals
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: status, in: query, schema: { type: string, enum: [PENDING, PARTIALLY_PAID, OVERDUE] } }
+        - { name: investorId, in: query, schema: { type: string, format: uuid } }
+        - { name: overdueOnly, in: query, schema: { type: boolean } }
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: pageSize, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: 'Paginated rows plus totals { contracted, paid, outstanding }' }
+  /api/reports/collections:
+    get:
+      tags: [Reports]
+      summary: Collection register grouped by method
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: method, in: query, schema: { type: string, enum: [BKASH, CASH, BANK, OTHER] } }
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: 'Paginated rows plus totals { amount, count, byMethod[] }' }
+  /api/reports/investors/{id}/statement:
+    get:
+      tags: [Reports]
+      summary: Full investor statement (investments, installments, payments, totals)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: '{ investor, totals, investments[], payments[] }' }
+  /api/reports/due.xlsx:
+    get:
+      tags: [Reports]
+      summary: Excel export of the due book (audited, report:export)
+      responses:
+        '200':
+          description: OOXML workbook (attachment)
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/reports/collections.xlsx:
+    get:
+      tags: [Reports]
+      summary: Excel export of the collection register (audited)
+      responses:
+        '200': { description: OOXML workbook (attachment) }
+  /api/reports/investors/{id}/statement.xlsx:
+    get:
+      tags: [Reports]
+      summary: Excel statement export (audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: OOXML workbook (attachment) }
+  /api/reports/investors/{id}/statement.pdf:
+    get:
+      tags: [Reports]
+      summary: PDF statement export (audited)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: application/pdf }
+
+  # --------------------------------------------------------------- audit ----
+  /api/audit-logs:
+    get:
+      tags: [Audit]
+      summary: Read the append-only audit log (SUPER_ADMIN only)
+      parameters:
+        - { name: adminId, in: query, schema: { type: string, format: uuid } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: entity, in: query, schema: { type: string } }
+        - { name: entityId, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Paginated' }
+        '405': { description: The log cannot be modified – POST/PUT/PATCH/DELETE are rejected }
+  /api/audit-logs/actions:
+    get:
+      tags: [Audit]
+      summary: Distinct action names for the filter dropdown
+      responses:
+        '200': { description: '{ actions: string[] }' }
+
+  # ------------------------------------------------------------ settings ----
+  /api/settings:
+    get:
+      tags: [Settings]
+      summary: List runtime settings (SUPER_ADMIN only)
+      responses:
+        '200': { description: '{ settings[] with value, default and isOverridden }' }
+    put:
+      tags: [Settings]
+      summary: Update runtime settings (audited, validated ranges)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: { type: string }
+              example: { payment_link_ttl_days: 14, reminder_days_before: 5, company_name: Acme Investments }
+      responses:
+        '200': { description: '{ settings[] }' }
+        '400': { description: Unknown key or out-of-range value }
+
+  # -------------------------------------------------------------- public ----
+  /api/public/config:
+    get:
+      tags: [Public]
+      summary: Company name, support mobile and gateway mode (no secrets)
+      security: []
+      responses:
+        '200': { description: '{ companyName, supportMobile, gateway, gatewayMode }' }
+  /api/public/payments/{token}:
+    get:
+      tags: [Public]
+      summary: Minimal installment details for a valid token (rate limited)
+      description: |
+        Returns only first name, installment serial/count, amount and due date.
+        Unknown, expired, already paid and waived tokens share one generic 404.
+      security: []
+      parameters: [{ name: token, in: path, required: true, schema: { type: string, minLength: 20, maxLength: 200 } }]
+      responses:
+        '200':
+          description: '{ firstName, installmentSerial, installmentCount, amount, amountLabel, dueDate, status, isOverdue, alreadyPaid }'
+        '404': { description: Invalid or expired payment link }
+        '429': { description: Rate limit exceeded }
+  /api/public/payments/{token}/start:
+    post:
+      tags: [Public]
+      summary: Start a bKash session for the token
+      description: The amount is taken from the database; the client cannot influence it.
+      security: []
+      parameters: [{ name: token, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: '{ paymentId, redirectUrl, gatewayPaymentId, amount, gatewayLive }' }
+        '404': { description: Invalid or expired link }
+        '409': { description: Already fully paid or the investor is inactive }
+  /api/public/payments/bkash/callback:
+    get:
+      tags: [Public]
+      summary: bKash return URL
+      description: |
+        Never trusts the query string: the payment is looked up by our own paymentID, then
+        executed and queried at the gateway, and only a fully verified transaction is settled
+        (status Completed + trxID + exact amount + matching merchant invoice). Always redirects
+        the browser to `/pay/result?status=success|failed|cancelled|pending`.
+      security: []
+      parameters:
+        - { name: paymentID, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: trxID, in: query, schema: { type: string } }
+      responses:
+        '303': { description: Redirect to the result page }
+  /api/public/payments/bkash/webhook:
+    post:
+      tags: [Public]
+      summary: Optional gateway webhook (BKASH_WEBHOOK_ENABLED, signature checked)
+      description: The payload is only a hint – the transaction is always re-verified with the gateway.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paymentID: { type: string }
+                trxID: { type: string }
+                transactionStatus: { type: string }
+      responses:
+        '200': { description: '{ accepted: true }' }
+        '202': { description: '{ accepted: false, reason }' }

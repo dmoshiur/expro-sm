@@ -21,6 +21,7 @@ import { publicRouter } from './public.routes';
 import { fileRouter } from './file.routes';
 import { dashboardRouter } from './dashboard.routes';
 import { reportRouter } from './report.routes';
+import { settingsRouter } from './settings.routes';
 
 export const apiRouter = Router();
 
@@ -36,6 +37,7 @@ apiRouter.use('/audit-logs', auditRouter);
 apiRouter.use('/files', fileRouter);
 apiRouter.use('/dashboard', dashboardRouter);
 apiRouter.use('/reports', reportRouter);
+apiRouter.use('/settings', settingsRouter);
 
 /** Liveness + database readiness probe. */
 apiRouter.get(

@@ -18,6 +18,7 @@
  * docs/payment-flow.md.
  */
 import { config } from '../config';
+import { getNumberSetting, SETTING_KEYS } from '../services/settings/settings.service';
 import { prisma } from '../config/prisma';
 import { AuditAction, AuditEntity } from '../utils/auditActions';
 import { formatBdt } from '../utils/money';
@@ -60,7 +61,7 @@ export async function sendRemindersFor(
     }
 
     try {
-      const link = await generateLink(installment.id, { ttlDays: config.paymentLink.ttlDays });
+      const link = await generateLink(installment.id);
       const outstanding = installment.amount - installment.paidAmount;
       const body = reminderMessage({
         investorName: installment.investment.investor.name,
@@ -121,7 +122,8 @@ export async function reminderJob(context: JobContext): Promise<JobResult> {
   }
 
   const today = startOfDhakaDay(now);
-  const dueWindowEnd = addDhakaDays(today, config.reminders.daysBefore + 1);
+  const daysBefore = await getNumberSetting(SETTING_KEYS.reminderDaysBefore);
+  const dueWindowEnd = addDhakaDays(today, daysBefore + 1);
   const overdueCutoff = new Date(now.getTime() - OVERDUE_REMINDER_EVERY_DAYS * 24 * 60 * 60 * 1000);
   // at most one due reminder per Dhaka calendar day
   const todayCutoff = addDhakaDays(today, -1);
