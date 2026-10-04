@@ -1,0 +1,21 @@
+# Tests
+**/tests/
+**/*.test.ts
+**/*.test.tsx
+**/vitest.config.ts
+**/coverage/
+
+# Local dev data
+pgdata/
+local-storage/
+*.log
+
+# Docs & deploy helpers
+investor-portal/docs/
+investor-portal/deploy/
+investor-portal/scripts/local-postgres.sh
+investor-portal/scripts/reset-db.mjs
+
+# Git
+.git/
+.gitignore

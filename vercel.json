@@ -1,0 +1,28 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "client": {
+      "root": "investor-portal/client",
+      "framework": "vite"
+    },
+    "server": {
+      "root": "investor-portal/server",
+      "framework": "express",
+      "buildCommand": "npm run prisma:generate && npm run build"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "server"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "client"
+      }
+    }
+  ]
+}
