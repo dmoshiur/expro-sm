@@ -15,6 +15,7 @@ import { authRouter } from './auth.routes';
 import { adminRouter } from './admin.routes';
 import { investorRouter } from './investor.routes';
 import { auditRouter } from './audit.routes';
+import { investmentRouter, installmentRouter } from './investment.routes';
 import { fileRouter } from './file.routes';
 
 export const apiRouter = Router();
@@ -23,6 +24,8 @@ export const apiRouter = Router();
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/admins', adminRouter);
 apiRouter.use('/investors', investorRouter);
+apiRouter.use('/investments', investmentRouter);
+apiRouter.use('/installments', installmentRouter);
 apiRouter.use('/audit-logs', auditRouter);
 apiRouter.use('/files', fileRouter);
 
