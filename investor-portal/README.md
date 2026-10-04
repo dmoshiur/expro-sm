@@ -49,7 +49,8 @@ investor-portal/
 │   ├── tests/                   # Vitest + Supertest (136 tests)
 │   └── server.ts                # bootstrap
 ├── client/                      # React + Vite + TS SPA (Tailwind, TanStack Query, RHF + Zod)
-│   └── src/{pages,components,services,store,hooks,lib}
+│   ├── src/{pages,components,services,store,hooks,lib}
+│   └── tests/                   # Vitest + Testing Library (jsdom) component tests
 ├── deploy/                      # Nginx, PM2, backup scripts
 ├── docs/                        # permissions, payment flow, OpenAPI, Postman
 └── scripts/local-postgres.sh    # zero-install local PostgreSQL for development
@@ -181,14 +182,25 @@ cancelled / amount-mismatch outcomes. All 136 tests run against this mock.
 ## Tests
 
 ```bash
-npm test                       # server: resets investor_portal_test then runs Vitest (136 tests)
+npm test                       # server suite (resets investor_portal_test) then the client suite
 npm --workspace server run test:watch
-npm run typecheck              # both workspaces
+npm --workspace client run test:watch
+npm run typecheck              # both workspaces (client typechecks src and tests)
 npm run lint                   # both workspaces
 npm run build                  # server tsc + client vite build
 ```
 
-The suite covers installment splitting and remainder, sum validation, token hashing / expiry /
+**Server** — Vitest + Supertest against real PostgreSQL and mocked bKash/SMS (136 tests).
+**Client** — Vitest + Testing Library in jsdom (`client/tests`): form validation state, label/ref
+contracts of the shared primitives, etc.
+
+Client-side forms follow one validation contract: a message appears only after the field was
+blurred/touched or the form was submitted, and any "required" message disappears again as soon as
+the field holds text (`client/src/lib/form.ts`). `<Input>`/`<Select>` are `forwardRef` components
+because react-hook-form needs the DOM ref to read values — without it every field looks empty to the
+resolver.
+
+The server suite covers installment splitting and remainder, sum validation, token hashing / expiry /
 regeneration, RBAC on **every** admin route (401 / 403 matrix incl. PII masking), duplicate
 callbacks, duplicate transaction ids, cancelled and failed payments, amount mismatch, the
 reconciliation job, the overdue-marker and token-cleanup jobs (Dhaka day boundary), manual payments
@@ -346,7 +358,7 @@ off the database host.
 | Settings (link TTL, reminder lead time, branding) | **Done** | super admin, falls back to env |
 | RBAC matrix documented + tested on every route | **Done** | `docs/permissions.md`, route-inventory test |
 | Postman / OpenAPI | **Done** | `docs/openapi.yaml`, `docs/postman_collection.json` |
-| Automated tests | **Done** | 136 tests across 18 files (Vitest + Supertest) |
+| Automated tests | **Done** | 136 server tests (18 files) + 13 client component tests (3 files) |
 | Deployment docs (Nginx, PM2, TLS, backup/restore) | **Done** | this README + `deploy/` |
 | pg-boss scheduler | **Partial** | interface in place and swappable; node-cron used by default |
 | Nagad / card gateways | **Not done** | adapter interface exists; only bKash implemented (out of scope for v1) |

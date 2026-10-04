@@ -1,5 +1,5 @@
 /** Small shared UI primitives (kept in one file so pages stay readable). */
-import { type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { forwardRef, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 import clsx from 'clsx';
 import { bdt, titleCase } from '@/lib/format';
 
@@ -56,23 +56,54 @@ export function StatusBadge({ status }: { status: string }) {
   return <span className={clsx('badge', STATUS_STYLES[status] ?? 'bg-slate-100 text-slate-600')}>{titleCase(status)}</span>;
 }
 
-export function Field({ label, error, hint, children }: { label: string; error?: string; hint?: string; children: ReactNode }) {
+export function Field({
+  label,
+  error,
+  hint,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  error?: string;
+  hint?: string;
+  /** id of the control inside, so the label is programmatically associated. */
+  htmlFor?: string;
+  children: ReactNode;
+}) {
   return (
     <div>
-      <label className="label">{label}</label>
+      <label className="label" htmlFor={htmlFor}>
+        {label}
+      </label>
       {children}
-      {error ? <p className="mt-1 text-xs text-rose-600">{error}</p> : hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
+      {error ? (
+        <p className="mt-1 text-xs text-rose-600" role="alert">
+          {error}
+        </p>
+      ) : hint ? (
+        <p className="mt-1 text-xs text-slate-500">{hint}</p>
+      ) : null}
     </div>
   );
 }
 
-export const Input = (props: InputHTMLAttributes<HTMLInputElement>) => (
-  <input {...props} className={clsx('input', props.className)} />
+/**
+ * Text input primitive.
+ *
+ * `forwardRef` matters: react-hook-form's `register()` hands back a `ref` and
+ * reads the element through it. A plain function component would drop that ref
+ * (React 18), leaving the field permanently "empty" for the resolver - which is
+ * exactly what made the required messages show for filled-in inputs.
+ */
+export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
+  ({ className, ...props }, ref) => <input ref={ref} {...props} className={clsx('input', className)} />,
 );
+Input.displayName = 'Input';
 
-export const Select = (props: SelectHTMLAttributes<HTMLSelectElement>) => (
-  <select {...props} className={clsx('input', props.className)} />
+export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(
+  ({ className, ...props }, ref) => <select ref={ref} {...props} className={clsx('input', className)} />,
 );
+Select.displayName = 'Select';
 
 export function Pagination({
   page,

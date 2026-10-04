@@ -7,6 +7,7 @@ import { authService } from '@/services/auth.service';
 import { errorMessage } from '@/services/api';
 import { useAuthStore } from '@/store/auth';
 import { Alert, Field, Input, Spinner } from '@/components/ui';
+import { fieldError } from '@/lib/form';
 
 const schema = z.object({
   email: z.string().min(1, 'Email is required').email('Enter a valid email address'),
@@ -25,8 +26,22 @@ export default function Login() {
     register,
     handleSubmit,
     getValues,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({ resolver: zodResolver(schema) });
+    watch,
+    formState: { errors, touchedFields, isSubmitted, isSubmitting },
+  } = useForm<FormValues>({
+    resolver: zodResolver(schema),
+    defaultValues: { email: '', password: '' },
+    // Validate when a field is blurred (so an untouched field never nags) and
+    // re-validate on every keystroke afterwards, so a "Required" message clears
+    // as soon as text is present.
+    mode: 'onTouched',
+    reValidateMode: 'onChange',
+  });
+
+  const email = watch('email');
+  const password = watch('password');
+  const emailError = fieldError({ message: errors.email?.message, value: email, touched: !!touchedFields.email, submitted: isSubmitted });
+  const passwordError = fieldError({ message: errors.password?.message, value: password, touched: !!touchedFields.password, submitted: isSubmitted });
 
   const [totp, setTotp] = useState('');
 
@@ -63,11 +78,23 @@ export default function Login() {
 
             {!requiresTotp ? (
               <form className="space-y-4" onSubmit={handleSubmit((values) => submit(values))}>
-                <Field label="Email" error={errors.email?.message}>
-                  <Input type="email" autoComplete="username" placeholder="admin@example.com" {...register('email')} />
+                <Field label="Email" htmlFor="login-email" error={emailError}>
+                  <Input
+                    id="login-email"
+                    type="email"
+                    autoComplete="username"
+                    placeholder="admin@example.com"
+                    {...register('email')}
+                  />
                 </Field>
-                <Field label="Password" error={errors.password?.message}>
-                  <Input type="password" autoComplete="current-password" placeholder="••••••••" {...register('password')} />
+                <Field label="Password" htmlFor="login-password" error={passwordError}>
+                  <Input
+                    id="login-password"
+                    type="password"
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                    {...register('password')}
+                  />
                 </Field>
                 <button type="submit" className="btn-primary w-full" disabled={isSubmitting}>
                   {isSubmitting ? <Spinner className="h-4 w-4" /> : null}
