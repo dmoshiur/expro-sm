@@ -341,6 +341,14 @@ How that report reaches you matters, so do not "simplify" it either:
   prevent an administrator from logging in.
 * `RUN_JOBS` is forced off on Vercel (in-process node-cron cannot run in a serverless function), so
   there is nothing to set there; don't re-add a guardrail that demands `RUN_JOBS=false`.
+* A Vercel deployment derives its **own origin** (`VERCEL_PROJECT_PRODUCTION_URL` for production,
+  `VERCEL_URL` for previews): `APP_BASE_URL`, `API_BASE_URL`, `BKASH_CALLBACK_URL` and the
+  `CORS_ORIGINS` allowlist fall back to it whenever the configured value is empty or a loopback URL
+  (`localhost`/`127.0.0.1`, i.e. the placeholders people copy out of `.env.example`). A deliberate
+  non-local value is never rewritten - it stays a normal configuration problem. Every replacement is
+  logged at startup (`[config] APP_BASE_URL=http://localhost:5173 is not usable on a hosted
+  deployment - using https://...`) and listed by `env:check`, so a payment link or SMS that ends up
+  on the wrong host can always be traced back to one line.
 
 Uploads use Cloudinary in production; local uploads remain a development/test adapter.
 

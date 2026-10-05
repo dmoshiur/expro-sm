@@ -21,6 +21,7 @@ import {
   productionConfigUtils,
   type ConfigProblem,
 } from './production';
+import { deploymentOrigin, deploymentOrigins, resolveHostedOrigins, resolveHostedUrl } from './deployment-urls';
 
 // Production providers inject environment variables directly. This helper only
 // reads a local .env for non-Vercel development/self-hosted processes.
@@ -173,6 +174,40 @@ const isVercelDeployment =
   (process.env.VERCEL === '1' && env.VERCEL_ENV !== 'development');
 const isProd = env.NODE_ENV === 'production' || isVercelDeployment;
 
+// ------------------------- public URLs on Vercel ----------------------------
+// Vercel deployments derive their own origin, so a project that copied
+// `http://localhost:...` values from .env.example (or left the URLs unset) still
+// produces correct payment links, SMS links and bKash redirects, and its own SPA
+// is never rejected by CORS. Non-local values are never rewritten; every
+// replacement is reported below so it is visible in the deployment logs.
+const deploymentUrlContext = {
+  isVercel: isVercelDeployment,
+  vercelEnv: env.VERCEL_ENV,
+  projectProductionUrl: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+  deploymentUrl: process.env.VERCEL_URL,
+};
+const ownOrigins = deploymentOrigins(deploymentUrlContext);
+const ownOrigin = deploymentOrigin(deploymentUrlContext);
+
+const appBaseUrl = resolveHostedUrl('APP_BASE_URL', env.APP_BASE_URL, ownOrigin);
+const apiBaseUrl = resolveHostedUrl('API_BASE_URL', env.API_BASE_URL, ownOrigin);
+const bkashCallbackUrl = resolveHostedUrl(
+  'BKASH_CALLBACK_URL',
+  env.BKASH_CALLBACK_URL,
+  ownOrigin ? `${ownOrigin}/api/public/payments/bkash/callback` : undefined,
+);
+const corsOrigins = resolveHostedOrigins(env.CORS_ORIGINS, ownOrigins);
+const urlResolutionNotes = [
+  appBaseUrl.note,
+  apiBaseUrl.note,
+  bkashCallbackUrl.note,
+  ...corsOrigins.notes,
+].filter((note): note is string => Boolean(note));
+
+for (const note of urlResolutionNotes) {
+  console.warn(`[config] ${note}`);
+}
+
 // --------------------------- configuration problems ------------------------
 // Collected (never thrown) so the API can answer HTTP 503 with the exact list
 // instead of crashing every request. `scope: 'core'` problems block the whole
@@ -234,10 +269,10 @@ if (isProd) {
       smsConfigured: Boolean(env.SMS_API_KEY && env.SMS_API_URL),
       smsApiUrl: env.SMS_API_URL,
       cookieSecure: env.COOKIE_SECURE,
-      corsOrigins: env.CORS_ORIGINS,
-      appBaseUrl: env.APP_BASE_URL,
-      apiBaseUrl: env.API_BASE_URL,
-      bkashCallbackUrl: env.BKASH_CALLBACK_URL,
+      corsOrigins: corsOrigins.origins,
+      appBaseUrl: appBaseUrl.value,
+      apiBaseUrl: apiBaseUrl.value,
+      bkashCallbackUrl: bkashCallbackUrl.value,
       runJobs: env.RUN_JOBS && !env.JOBS_DISABLED,
     }),
   );
@@ -275,9 +310,9 @@ export const config = {
   isDev: env.NODE_ENV === 'development' && !isProd,
   isVercel: isVercelDeployment,
   port: env.PORT,
-  corsOrigins: env.CORS_ORIGINS.length ? env.CORS_ORIGINS : ['http://localhost:5173'],
-  apiBaseUrl: env.API_BASE_URL.replace(/\/$/, ''),
-  appBaseUrl: env.APP_BASE_URL.replace(/\/$/, ''),
+  corsOrigins: corsOrigins.origins.length ? corsOrigins.origins : ['http://localhost:5173'],
+  apiBaseUrl: apiBaseUrl.value.replace(/\/$/, ''),
+  appBaseUrl: appBaseUrl.value.replace(/\/$/, ''),
   trustProxy: env.TRUST_PROXY,
   db: {
     url: databaseUrl,
@@ -316,7 +351,7 @@ export const config = {
     appSecret: env.BKASH_APP_SECRET,
     username: env.BKASH_USERNAME,
     password: env.BKASH_PASSWORD,
-    callbackUrl: env.BKASH_CALLBACK_URL,
+    callbackUrl: bkashCallbackUrl.value,
     webhookEnabled: env.BKASH_WEBHOOK_ENABLED,
     webhookSecret: env.BKASH_WEBHOOK_SECRET,
     /** true when real credentials are present (otherwise the mock gateway is used) */
