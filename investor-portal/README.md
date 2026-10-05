@@ -48,7 +48,7 @@ investor-portal/
 │   ├── prisma/                  # schema, SQL migration (checks + triggers), seed
 │   ├── scripts/                 # prisma launcher, libSQL migration applier, db reset,
 │   │                            # integrity checker, Turso backup
-│   ├── tests/                   # Vitest + Supertest (145 tests)
+│   ├── tests/                   # Vitest + Supertest (150 tests)
 │   └── server.ts                # bootstrap
 ├── client/                      # React + Vite + TS SPA (Tailwind, TanStack Query, RHF + Zod)
 │   ├── src/{pages,components,services,store,hooks,lib}
@@ -59,7 +59,7 @@ investor-portal/
 
 ## Requirements
 
-* Node.js **20+** (developed on 22) and npm 10+
+* Node.js **20.12+** (developed on 22; the server uses Node's built-in local `.env` loader) and npm 10+
 * A database: a [Turso](https://turso.tech) database in production, or a local SQLite file for
   development and tests — no server, no Docker, no connection pooler
 * Optional: Cloudinary account (file storage), bKash sandbox credentials, SMS gateway account
@@ -112,12 +112,12 @@ npm --workspace server run seed:demo       # 6 investors, investments, some paid
 | `ENCRYPTION_KEY` | 32-byte hex key for AES-256-GCM (NID numbers, TOTP secrets) — **rotating it invalidates stored NIDs/2FA secrets** |
 | `CORS_ORIGINS` | comma-separated allowlist, exact origins in production. A **single-label wildcard** is supported for ephemeral hosts (e.g. `https://*.e2b.app` for sandbox previews) — it never matches the bare domain or crosses a dot, so it cannot be widened. Anything else is rejected with 403 |
 | `RATE_LIMIT_DISABLED` | set to `1` in CI only |
-| `BKASH_MODE`, `BKASH_BASE_URL`, `BKASH_APP_KEY`, `BKASH_APP_SECRET`, `BKASH_USERNAME`, `BKASH_PASSWORD`, `BKASH_CALLBACK_URL`, `BKASH_WEBHOOK_ENABLED`, `BKASH_WEBHOOK_SECRET` | bKash Tokenized Checkout. Without credentials the deterministic **mock gateway** is used, so development and tests work offline |
+| `BKASH_MODE`, `BKASH_BASE_URL`, `BKASH_APP_KEY`, `BKASH_APP_SECRET`, `BKASH_USERNAME`, `BKASH_PASSWORD`, `BKASH_CALLBACK_URL`, `BKASH_WEBHOOK_ENABLED`, `BKASH_WEBHOOK_SECRET` | bKash Tokenized Checkout. Mock payments are development/test-only; hosted deployments require credentials. `BKASH_BASE_URL` defaults to sandbox or live based on `BKASH_MODE` |
 | `SMS_PROVIDER`, `SMS_API_KEY`, `SMS_API_URL`, `SMS_SENDER_ID` | `console` (dev, prints + keeps an in-memory outbox), `bulksmsbd`, `alpha` |
-| `STORAGE_DRIVER`, `LOCAL_STORAGE_DIR`, `CLOUDINARY_*` | `auto` uses Cloudinary when configured, otherwise local disk |
+| `STORAGE_DRIVER`, `LOCAL_STORAGE_DIR`, `CLOUDINARY_*` | `auto` uses Cloudinary when configured, otherwise local disk in development; hosted deployments require Cloudinary explicitly |
 | `PAYMENT_LINK_TTL_DAYS`, `REMINDER_DAYS_BEFORE`, `REMINDER_ENABLED` | defaults; super admins can override the first two in **Settings** |
 | `CRON_TIMEZONE`, `CRON_OVERDUE_MARK`, `CRON_REMINDERS`, `CRON_RECONCILE`, `CRON_TOKEN_CLEANUP` | cron expressions (all evaluated in Asia/Dhaka) |
-| `RUN_JOBS` | `true` (default) starts the cron jobs in this process; set to `false` on every extra instance when scaling out |
+| `RUN_JOBS` | `true` starts node-cron in a long-lived Node process; set `false` on Vercel and all API replicas, then run one dedicated worker/scheduler |
 | `COMPANY_NAME`, `SUPPORT_MOBILE`, `RECEIPT_PREFIX` | branding on the public page, SMS and receipts |
 | `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD`, `SEED_SUPER_ADMIN_NAME`, `SEED_DEMO` | seed script inputs (password is generated when unset) |
 
@@ -203,9 +203,9 @@ npm --workspace server run seed:demo       # 6 investors, investments, some paid
    the reconciliation cron already covers lost callbacks.
 4. Pay with a bKash sandbox wallet and confirm the installment flips to **PAID** with a receipt.
 
-Without credentials the API boots with the **mock gateway**: `startPayment` returns a redirect URL to
-the callback itself, and `mockGatewayControl` (test helper) can script completed / failed /
-cancelled / amount-mismatch outcomes. All 145 tests run against this mock.
+In development/test only, missing credentials select the **mock gateway**: `startPayment` returns a
+redirect URL to the callback itself, and `mockGatewayControl` can script completed / failed /
+cancelled / amount-mismatch outcomes. Hosted/production startup rejects missing bKash credentials.
 
 ## Database migrations
 
@@ -246,7 +246,7 @@ npm run build                  # server tsc + client vite build
 ```
 
 **Server** — Vitest + Supertest against a real libSQL/Turso database file and mocked bKash/SMS
-(145 tests). `npm test` drops and re-migrates `TEST_DATABASE_URL` first, so the suite is
+(150 tests). `npm test` drops and re-migrates `TEST_DATABASE_URL` first, so the suite is
 self-contained and needs no `.env` (see `tests/setup.ts`).
 **Client** — Vitest + Testing Library in jsdom (`client/tests`): form validation state, label/ref
 contracts of the shared primitives, etc.
@@ -299,13 +299,61 @@ sudo certbot --nginx -d portal.example.com --redirect
 
 ### Vercel (the repo ships a `vercel.json` with two services)
 
-The `client` service builds the SPA and the `server` service builds the API; `/api/*` is rewritten to
-the API. Set the environment variables on the **server** service
-(`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `ENCRYPTION_KEY`,
-`NID_HASH_PEPPER`, `CORS_ORIGINS=https://<your-domain>`, `APP_BASE_URL`, `API_BASE_URL`,
-`RUN_JOBS=false`) and run the migrations from your machine or CI
-(`npm --workspace server run db:migrate`) — the build itself only runs `prisma generate` + `tsc`.
-Because the database is remote libSQL there is no connection-pool problem to solve on serverless.
+In Vercel, set the project Root Directory to the repository root (the directory containing
+`vercel.json`) and the Framework Preset to **Services**. Do not point the project directly at
+`investor-portal/server`, or Vercel will bypass the two-service routing configuration. The `client`
+service builds the Vite
+SPA; the `server` service explicitly uses `server/app.ts`, which exports an Express app as a
+serverless function. `server/server.ts` remains the entrypoint for long-running Node/VPS deployments
+and is not used by the Vercel service. This avoids opening a listening socket or starting a
+process-local cron scheduler inside a serverless function.
+
+Prisma is the ORM/client, not the database host. Production requests use the configured hosted
+libSQL database through `@prisma/adapter-libsql`; the local `file:./prisma/dev.db` URL is for
+local development/tests only. Production and Vercel startup now fail with a list of missing settings
+instead of silently falling back to a local SQLite file, ephemeral disk, or mock bKash gateway.
+Uploads use Cloudinary in production; local uploads remain a development/test adapter.
+
+Add these values to the Vercel project's **Production** environment (use isolated Turso/Cloudinary
+credentials for Preview when enabling Preview deployments):
+
+```env
+NODE_ENV=production
+TURSO_DATABASE_URL=libsql://<database>-<organization>.turso.io
+TURSO_AUTH_TOKEN=<Turso database token>
+STORAGE_DRIVER=cloudinary
+CLOUDINARY_CLOUD_NAME=<cloud name>
+CLOUDINARY_API_KEY=<api key>
+CLOUDINARY_API_SECRET=<api secret>
+BKASH_MODE=live
+BKASH_BASE_URL=https://tokenized.pay.bka.sh/v1.2.0-beta
+BKASH_APP_KEY=<merchant app key>
+BKASH_APP_SECRET=<merchant app secret>
+BKASH_USERNAME=<merchant username>
+BKASH_PASSWORD=<merchant password>
+JWT_ACCESS_SECRET=<at least 32 random characters>
+JWT_REFRESH_SECRET=<a different 32+ character secret>
+ENCRYPTION_KEY=<32-byte base64 or hex key>
+NID_HASH_PEPPER=<a different 32+ character secret>
+CORS_ORIGINS=https://portal.example.com
+APP_BASE_URL=https://portal.example.com
+API_BASE_URL=https://portal.example.com
+BKASH_CALLBACK_URL=https://portal.example.com/api/public/payments/bkash/callback
+SMS_PROVIDER=bulksmsbd
+SMS_API_URL=https://<your-sms-provider>/api/send
+SMS_API_KEY=<SMS provider key>
+SMS_SENDER_ID=<approved sender ID>
+RUN_JOBS=false
+```
+
+Vercel injects environment variables at runtime; it does not need a `.env` file or the `dotenv`
+package. Apply database migrations from CI or a trusted local machine with the same Turso URL/token
+before sending traffic (`npm --workspace server run db:migrate`). The Vercel build only generates the
+Prisma client and compiles the server; it never applies schema changes to production automatically.
+
+Do not run the Node cron scheduler in a Vercel function. Run exactly one long-lived worker/server
+with `RUN_JOBS=true` on a persistent Node/container host, or move the scheduled jobs to a managed
+queue/scheduler. Set `RUN_JOBS=false` on the Vercel service and on any additional API instances.
 
 Checklist before going live:
 
@@ -440,7 +488,7 @@ itself is a valid snapshot (`VACUUM INTO` is the fastest way to copy it while th
 | Settings (link TTL, reminder lead time, branding) | **Done** | super admin, falls back to env |
 | RBAC matrix documented + tested on every route | **Done** | `docs/permissions.md`, route-inventory test |
 | Postman / OpenAPI | **Done** | `docs/openapi.yaml`, `docs/postman_collection.json` |
-| Automated tests | **Done** | 145 server tests (20 files) + 13 client component tests (3 files) |
+| Automated tests | **Done** | 150 server tests (21 files) + 13 client component tests (3 files) |
 | Deployment docs (Nginx, PM2, TLS, backup/restore) | **Done** | this README + `deploy/` |
 | pg-boss scheduler | **Partial** | interface in place and swappable; node-cron used by default |
 | Nagad / card gateways | **Not done** | adapter interface exists; only bKash implemented (out of scope for v1) |

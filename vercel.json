@@ -8,7 +8,8 @@
     "server": {
       "root": "investor-portal/server",
       "framework": "express",
-      "buildCommand": "npm run prisma:generate && npm run build"
+      "entrypoint": "app.ts",
+      "buildCommand": "npm run build"
     }
   },
   "rewrites": [

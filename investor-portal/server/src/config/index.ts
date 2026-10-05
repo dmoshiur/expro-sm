@@ -1,17 +1,17 @@
 /**
  * Centralised, validated configuration.
  *
- * Everything the server needs comes from server/.env (never from the client).
- * Importing this module throws immediately if something required is missing,
- * so a misconfigured deployment fails fast instead of at request time.
+ * Server configuration is validated at module load. A local server/.env file
+ * is loaded for development/self-hosting; Vercel-provided environment variables
+ * are used directly. Production rejects local-only service fallbacks.
  */
-import path from 'node:path';
-import dotenv from 'dotenv';
 import { z } from 'zod';
+import { loadLocalEnvironment } from './load-local-env';
+import { assertHostedConfiguration } from './production';
 
-// .env lives next to this package: <repo>/server/.env
-dotenv.config({ path: path.resolve(__dirname, '../../../server/.env') });
-dotenv.config(); // fall back to process cwd (useful for tests / PM2 ecosystem files)
+// Production providers inject environment variables directly. This helper only
+// reads a local .env for non-Vercel development/self-hosted processes.
+loadLocalEnvironment();
 
 const bool = (def: boolean) =>
   z
@@ -33,6 +33,7 @@ const csv = z
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  VERCEL_ENV: z.enum(['development', 'preview', 'production']).optional(),
   PORT: int(4000),
   CORS_ORIGINS: csv,
   API_BASE_URL: z.string().default('http://localhost:4000'),
@@ -73,7 +74,7 @@ const schema = z.object({
   LOCKOUT_MINUTES: int(15),
 
   BKASH_MODE: z.enum(['sandbox', 'live']).default('sandbox'),
-  BKASH_BASE_URL: z.string().default('https://tokenized.sandbox.bka.sh/v1.2.0-beta'),
+  BKASH_BASE_URL: z.string().optional().default(''),
   BKASH_APP_KEY: z.string().optional().default(''),
   BKASH_APP_SECRET: z.string().optional().default(''),
   BKASH_USERNAME: z.string().optional().default(''),
@@ -124,16 +125,18 @@ if (!parsed.success) {
 }
 
 const env = parsed.data;
-const isProd = env.NODE_ENV === 'production';
+const bkashBaseUrl =
+  env.BKASH_BASE_URL.trim() ||
+  (env.BKASH_MODE === 'live' ? 'https://tokenized.pay.bka.sh/v1.2.0-beta' : 'https://tokenized.sandbox.bka.sh/v1.2.0-beta');
 
 // ------------------------------- database ----------------------------------
 const databaseUrl = env.TURSO_DATABASE_URL ?? env.DATABASE_URL ?? 'file:./prisma/dev.db';
 const isRemoteDatabase = /^(libsql|https?|wss?|turso):/i.test(databaseUrl);
 const syncUrl = env.TURSO_SYNC_URL && env.TURSO_SYNC_URL.length > 0 ? env.TURSO_SYNC_URL : undefined;
 
-if (isRemoteDatabase && !env.TURSO_AUTH_TOKEN) {
+if ((isRemoteDatabase || syncUrl) && !env.TURSO_AUTH_TOKEN) {
   throw new Error(
-    `[config] TURSO_AUTH_TOKEN is required for the remote database ${databaseUrl.replace(/\/\/.*@/, '//')}. ` +
+    '[config] TURSO_AUTH_TOKEN is required for the remote Turso database. ' +
       'Create one with `turso db tokens create <db>` and store it as a secret (never in git).',
   );
 }
@@ -143,12 +146,46 @@ if (syncUrl && isRemoteDatabase) {
       '(e.g. file:./prisma/replica.db).',
   );
 }
+if (syncUrl && !/^(libsql|https):\/\//i.test(syncUrl)) {
+  throw new Error('[config] TURSO_SYNC_URL must use a remote libsql:// or https:// URL.');
+}
+
+const isVercelDeployment =
+  env.VERCEL_ENV === 'production' ||
+  env.VERCEL_ENV === 'preview' ||
+  (process.env.VERCEL === '1' && env.VERCEL_ENV !== 'development');
+const isProd = env.NODE_ENV === 'production' || isVercelDeployment;
+
+if (isProd) {
+  assertHostedConfiguration({
+    isVercel: isVercelDeployment,
+    isVercelPreview: env.VERCEL_ENV === 'preview',
+    databaseUrl,
+    syncUrl,
+    authToken: env.TURSO_AUTH_TOKEN,
+    storageDriver: env.STORAGE_DRIVER,
+    cloudinaryConfigured: Boolean(env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET),
+    bkashConfigured: Boolean(env.BKASH_APP_KEY && env.BKASH_APP_SECRET && env.BKASH_USERNAME && env.BKASH_PASSWORD),
+    bkashMode: env.BKASH_MODE,
+    bkashBaseUrl,
+    smsProvider: env.SMS_PROVIDER,
+    smsConfigured: Boolean(env.SMS_API_KEY && env.SMS_API_URL),
+    smsApiUrl: env.SMS_API_URL,
+    cookieSecure: env.COOKIE_SECURE,
+    corsOrigins: env.CORS_ORIGINS,
+    appBaseUrl: env.APP_BASE_URL,
+    apiBaseUrl: env.API_BASE_URL,
+    bkashCallbackUrl: env.BKASH_CALLBACK_URL,
+    runJobs: env.RUN_JOBS && !env.JOBS_DISABLED,
+  });
+}
 
 export const config = {
-  env: env.NODE_ENV,
+  env: isProd ? 'production' : env.NODE_ENV,
   isProd,
   isTest: env.NODE_ENV === 'test',
-  isDev: env.NODE_ENV === 'development',
+  isDev: env.NODE_ENV === 'development' && !isProd,
+  isVercel: isVercelDeployment,
   port: env.PORT,
   corsOrigins: env.CORS_ORIGINS.length ? env.CORS_ORIGINS : ['http://localhost:5173'],
   apiBaseUrl: env.API_BASE_URL.replace(/\/$/, ''),
@@ -184,7 +221,7 @@ export const config = {
   },
   bkash: {
     mode: env.BKASH_MODE,
-    baseUrl: env.BKASH_BASE_URL.replace(/\/$/, ''),
+    baseUrl: bkashBaseUrl.replace(/\/$/, ''),
     appKey: env.BKASH_APP_KEY,
     appSecret: env.BKASH_APP_SECRET,
     username: env.BKASH_USERNAME,

@@ -8,6 +8,7 @@
  */
 import { config } from '../../../config';
 import { logger } from '../../../utils/logger';
+import { serviceUnavailable } from '../../../utils/errors';
 import type { GatewayAdapter } from './types';
 import { createBkashGateway } from './bkash.gateway';
 import { createMockGateway } from './mock.gateway';
@@ -25,6 +26,10 @@ export function getGateway(): GatewayAdapter {
       baseUrl: config.bkash.baseUrl,
     });
   }
+  if (config.isProd) {
+    throw serviceUnavailable('Online payments are not configured. Please contact support.');
+  }
+
   logger.warn('bKash credentials are not configured - using the mock gateway');
   return createMockGateway();
 }
