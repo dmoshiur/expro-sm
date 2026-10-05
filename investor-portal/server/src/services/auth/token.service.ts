@@ -12,7 +12,7 @@
  */
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
-import type { Admin, AdminRole } from '@prisma/client';
+import type { Admin, AdminRole } from '../../generated/prisma/client';
 import { config } from '../../config';
 import { prisma } from '../../config/prisma';
 import { unauthorized } from '../../utils/errors';

@@ -12,7 +12,7 @@
  * row is part of the same transaction and DOES roll back with it (preferred for
  * anything money related).
  */
-import type { Prisma } from '@prisma/client';
+import type { Prisma } from '../../generated/prisma/client';
 import { prisma, type Tx } from '../../config/prisma';
 import { logger } from '../../utils/logger';
 import type { AuditActionType } from '../../utils/auditActions';

@@ -1,5 +1,5 @@
 /// <reference types="express-serve-static-core" />
-import type { AdminRole } from '@prisma/client';
+import type { AdminRole } from '../generated/prisma/client';
 
 /**
  * Request-scoped types injected by middleware.

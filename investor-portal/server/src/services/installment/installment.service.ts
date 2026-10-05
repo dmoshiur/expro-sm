@@ -11,7 +11,7 @@
  *   - installment statuses only change through this service, so the audit trail
  *     is complete
  */
-import type { AdminRole, InstallmentStatus, Prisma } from '@prisma/client';
+import type { AdminRole, InstallmentStatus, Prisma } from '../../generated/prisma/client';
 import { prisma, type Tx } from '../../config/prisma';
 import { AuditAction, AuditEntity } from '../../utils/auditActions';
 import { addInterval, formatDhakaDate, isPastDue, parseDhakaDate, startOfDhakaDay } from '../../utils/dates';
@@ -238,11 +238,14 @@ export async function listInvestments(query: ListInvestmentsQuery, _role: AdminR
   const where: Prisma.InvestmentWhereInput = {
     ...(query.investorId ? { investorId: query.investorId } : {}),
     ...(query.status ? { status: query.status } : {}),
+    // NOTE: SQLite's LIKE (what Prisma's `contains` compiles to) is case-insensitive for
+    // ASCII, so the PostgreSQL-only `mode: 'insensitive'` argument is not needed - SQLite
+    // rejects it. Non-ASCII text (e.g. Bangla) is compared case-sensitively.
     ...(query.search
       ? {
           investor: {
             OR: [
-              { name: { contains: query.search, mode: 'insensitive' } },
+              { name: { contains: query.search } },
               { mobile: { contains: query.search } },
             ],
           },

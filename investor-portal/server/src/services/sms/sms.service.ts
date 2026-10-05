@@ -4,7 +4,7 @@
  * Every attempt (success or failure) is written to `sms_logs`, which is what the
  * admin UI shows and what the reminder job uses to avoid spamming investors.
  */
-import type { SmsPurpose } from '@prisma/client';
+import type { SmsPurpose } from '../../generated/prisma/client';
 import { config } from '../../config';
 import { prisma } from '../../config/prisma';
 import { logger } from '../../utils/logger';

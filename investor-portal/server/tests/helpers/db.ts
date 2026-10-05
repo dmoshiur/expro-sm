@@ -1,14 +1,23 @@
 /**
  * Test database helpers.
  *
- * Everything runs against TEST_DATABASE_URL (investor_portal_test), which is
- * re-created by `npm test` before the suite starts. Between tests we truncate
- * the business tables so each test starts from a known state.
+ * Everything runs against TEST_DATABASE_URL - a throwaway libSQL/SQLite
+ * database (`file:./prisma/test.db` by default) that `npm test` re-creates by
+ * dropping every table and re-applying prisma/migrations. Between tests we
+ * delete the business rows so each test starts from a known state.
+ *
+ * PostgreSQL had `TRUNCATE ... CASCADE`, which bypasses row triggers and
+ * re-checks nothing. SQLite has no TRUNCATE, so:
+ *   - rows are deleted child-first (foreign keys stay satisfied), and
+ *   - the append-only trigger on audit_logs is dropped for the wipe and put
+ *     back exactly as prisma/migrations/20260101000000_init/migration.sql
+ *     defines it, so the trigger itself stays under test.
  */
 import argon2 from 'argon2';
-import type { AdminRole } from '@prisma/client';
+import type { AdminRole } from '../../src/generated/prisma/client';
 import { prisma } from '../../src/config/prisma';
 
+/** Child tables first: foreign keys are enforced (PRAGMA foreign_keys = ON). */
 const TABLES = [
   'audit_logs',
   'sms_logs',
@@ -22,9 +31,38 @@ const TABLES = [
   'settings',
 ];
 
-export async function truncateAll(): Promise<void> {
-  await prisma.$executeRawUnsafe(`TRUNCATE ${TABLES.join(', ')} CASCADE`);
+/** Kept in sync with the init migration (see the "audit_logs is append-only" block). */
+const AUDIT_APPEND_ONLY_TRIGGERS = [
+  `CREATE TRIGGER "audit_logs_no_update" BEFORE UPDATE ON "audit_logs"
+   BEGIN SELECT RAISE(ABORT, 'audit_logs is append-only (UPDATE is not permitted)'); END`,
+  `CREATE TRIGGER "audit_logs_no_delete" BEFORE DELETE ON "audit_logs"
+   BEGIN SELECT RAISE(ABORT, 'audit_logs is append-only (DELETE is not permitted)'); END`,
+];
+
+async function dropAuditGuards(): Promise<void> {
+  await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "audit_logs_no_update"');
+  await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "audit_logs_no_delete"');
 }
+
+async function restoreAuditGuards(): Promise<void> {
+  await dropAuditGuards();
+  for (const trigger of AUDIT_APPEND_ONLY_TRIGGERS) {
+    await prisma.$executeRawUnsafe(trigger);
+  }
+}
+
+export async function truncateAll(): Promise<void> {
+  await dropAuditGuards();
+  try {
+    for (const table of TABLES) {
+      await prisma.$executeRawUnsafe(`DELETE FROM "${table}"`);
+    }
+  } finally {
+    await restoreAuditGuards();
+  }
+}
+
+export { restoreAuditGuards };
 
 export const TEST_PASSWORD = 'TestPassw0rd!';
 

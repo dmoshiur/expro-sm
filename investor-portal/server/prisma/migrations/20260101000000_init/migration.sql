@@ -1,70 +1,68 @@
--- CreateSchema
-CREATE SCHEMA IF NOT EXISTS "public";
-
--- CreateEnum
-CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ACCOUNTANT', 'VIEWER');
-
--- CreateEnum
-CREATE TYPE "InvestorStatus" AS ENUM ('ACTIVE', 'INACTIVE');
-
--- CreateEnum
-CREATE TYPE "InvestmentStatus" AS ENUM ('ACTIVE', 'COMPLETED', 'CANCELLED');
-
--- CreateEnum
-CREATE TYPE "InstallmentStatus" AS ENUM ('PENDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'WAIVED', 'CANCELLED');
-
--- CreateEnum
-CREATE TYPE "PaymentGateway" AS ENUM ('BKASH', 'NAGAD', 'MANUAL');
-
--- CreateEnum
-CREATE TYPE "PaymentStatus" AS ENUM ('INITIATED', 'PENDING', 'SUCCESS', 'FAILED', 'CANCELLED', 'REFUNDED');
-
--- CreateEnum
-CREATE TYPE "PaymentMethod" AS ENUM ('BKASH', 'CASH', 'BANK', 'OTHER');
-
--- CreateEnum
-CREATE TYPE "SmsStatus" AS ENUM ('QUEUED', 'SENT', 'FAILED');
-
--- CreateEnum
-CREATE TYPE "SmsPurpose" AS ENUM ('PAYMENT_LINK', 'REMINDER_DUE', 'REMINDER_OVERDUE', 'MANUAL', 'BULK');
+-- ===========================================================================
+-- Investor Installment Portal - initial schema (Turso / libSQL / SQLite)
+--
+-- Ported from the Supabase/PostgreSQL migration of the same name. Everything
+-- that SQLite can express is preserved:
+--
+--   * 64-bit INTEGER money columns (poisha), NOT NULL booleans, ISO-8601 UTC
+--     DATETIME text, JSONB text for raw gateway payloads and audit snapshots
+--   * enums as TEXT + CHECK constraints (PostgreSQL native enums were strict,
+--     so SQLite gets an explicit domain check - same guarantee)
+--   * UNIQUE indexes (including the partial (gateway, trxId) index that only
+--     applies to non-NULL transaction ids), FK actions and query indexes
+--   * append-only triggers on audit_logs, and the "at most 3 nominees" guard
+--
+-- NOT portable, and therefore enforced in the service layer plus
+-- `npm run db:check` (scripts/check-invariants.mjs):
+--
+--   * "installment amounts must sum to the investment total" and
+--     "nominee shares must sum to 100" were DEFERRED CONSTRAINT TRIGGERS in
+--     PostgreSQL: they were checked at COMMIT time, which is what allowed a
+--     multi-statement edit inside one transaction. SQLite has no deferred
+--     triggers, so those two invariants are validated by the services on every
+--     write and audited by the integrity checker.
+--
+-- Applied by scripts/apply-migrations.mjs (`npm run db:migrate`), which works
+-- against a local `file:` database and against a remote `libsql://` Turso
+-- database alike.
+-- ===========================================================================
 
 -- CreateTable
 CREATE TABLE "admins" (
-    "id" UUID NOT NULL,
+    "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
     "email" TEXT NOT NULL,
     "passwordHash" TEXT NOT NULL,
-    "role" "AdminRole" NOT NULL DEFAULT 'VIEWER',
+    "role" TEXT NOT NULL DEFAULT 'VIEWER',
     "twoFASecret" TEXT,
     "twoFAEnabled" BOOLEAN NOT NULL DEFAULT false,
     "failedLoginCount" INTEGER NOT NULL DEFAULT 0,
-    "lockedUntil" TIMESTAMP(3),
+    "lockedUntil" DATETIME,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
-    "lastLoginAt" TIMESTAMP(3),
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "admins_pkey" PRIMARY KEY ("id")
+    "lastLoginAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "admins_role_valid" CHECK ("role" IN ('SUPER_ADMIN', 'ACCOUNTANT', 'VIEWER')),
+    CONSTRAINT "admins_failed_login_count_valid" CHECK ("failedLoginCount" >= 0)
 );
 
 -- CreateTable
 CREATE TABLE "refresh_tokens" (
-    "id" UUID NOT NULL,
-    "adminId" UUID NOT NULL,
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "adminId" TEXT NOT NULL,
     "tokenHash" TEXT NOT NULL,
-    "expiresAt" TIMESTAMP(3) NOT NULL,
-    "revokedAt" TIMESTAMP(3),
+    "expiresAt" DATETIME NOT NULL,
+    "revokedAt" DATETIME,
     "replacedByHash" TEXT,
     "ip" TEXT,
     "userAgent" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "refresh_tokens_pkey" PRIMARY KEY ("id")
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "refresh_tokens_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "admins" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 -- CreateTable
 CREATE TABLE "investors" (
-    "id" UUID NOT NULL,
+    "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
     "mobile" TEXT NOT NULL,
     "nidEncrypted" TEXT,
@@ -72,91 +70,114 @@ CREATE TABLE "investors" (
     "address" TEXT,
     "photoPublicId" TEXT,
     "nidPublicId" TEXT,
-    "status" "InvestorStatus" NOT NULL DEFAULT 'ACTIVE',
+    "status" TEXT NOT NULL DEFAULT 'ACTIVE',
     "notes" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "investors_pkey" PRIMARY KEY ("id")
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "investors_status_valid" CHECK ("status" IN ('ACTIVE', 'INACTIVE')),
+    -- Bangladeshi mobile numbers: 01[3-9]XXXXXXXX or +8801[3-9]XXXXXXXX
+    CONSTRAINT "investors_mobile_format" CHECK (
+        "mobile" GLOB '01[3-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+        OR "mobile" GLOB '+8801[3-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+    )
 );
 
 -- CreateTable
 CREATE TABLE "nominees" (
-    "id" UUID NOT NULL,
-    "investorId" UUID NOT NULL,
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "investorId" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "relation" TEXT NOT NULL,
     "mobile" TEXT NOT NULL,
     "nidEncrypted" TEXT,
     "sharePercent" INTEGER NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "nominees_pkey" PRIMARY KEY ("id")
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "nominees_investorId_fkey" FOREIGN KEY ("investorId") REFERENCES "investors" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "nominees_share_percent_range" CHECK ("sharePercent" >= 1 AND "sharePercent" <= 100),
+    CONSTRAINT "nominees_mobile_format" CHECK (
+        "mobile" GLOB '01[3-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+        OR "mobile" GLOB '+8801[3-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+    )
 );
 
 -- CreateTable
 CREATE TABLE "investments" (
-    "id" UUID NOT NULL,
-    "investorId" UUID NOT NULL,
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "investorId" TEXT NOT NULL,
     "totalAmount" BIGINT NOT NULL,
     "installmentCount" INTEGER NOT NULL,
-    "status" "InvestmentStatus" NOT NULL DEFAULT 'ACTIVE',
+    "status" TEXT NOT NULL DEFAULT 'ACTIVE',
     "notes" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "investments_pkey" PRIMARY KEY ("id")
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "investments_investorId_fkey" FOREIGN KEY ("investorId") REFERENCES "investors" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT "investments_status_valid" CHECK ("status" IN ('ACTIVE', 'COMPLETED', 'CANCELLED')),
+    CONSTRAINT "investments_total_amount_positive" CHECK ("totalAmount" > 0),
+    CONSTRAINT "investments_installment_count_range" CHECK ("installmentCount" >= 1 AND "installmentCount" <= 120)
 );
 
 -- CreateTable
 CREATE TABLE "installments" (
-    "id" UUID NOT NULL,
-    "investmentId" UUID NOT NULL,
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "investmentId" TEXT NOT NULL,
     "serial" INTEGER NOT NULL,
     "amount" BIGINT NOT NULL,
     "paidAmount" BIGINT NOT NULL DEFAULT 0,
-    "dueDate" TIMESTAMP(3) NOT NULL,
-    "status" "InstallmentStatus" NOT NULL DEFAULT 'PENDING',
+    "dueDate" DATETIME NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
     "payTokenHash" TEXT,
-    "tokenExpiresAt" TIMESTAMP(3),
-    "lastRemindedAt" TIMESTAMP(3),
-    "paidAt" TIMESTAMP(3),
+    "tokenExpiresAt" DATETIME,
+    "lastRemindedAt" DATETIME,
+    "paidAt" DATETIME,
     "waivedReason" TEXT,
     "cancelledReason" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "installments_pkey" PRIMARY KEY ("id")
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "installments_investmentId_fkey" FOREIGN KEY ("investmentId") REFERENCES "investments" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "installments_status_valid" CHECK ("status" IN ('PENDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'WAIVED', 'CANCELLED')),
+    CONSTRAINT "installments_amount_positive" CHECK ("amount" > 0),
+    CONSTRAINT "installments_paid_amount_valid" CHECK ("paidAmount" >= 0 AND "paidAmount" <= "amount"),
+    CONSTRAINT "installments_serial_positive" CHECK ("serial" >= 1)
 );
 
 -- CreateTable
 CREATE TABLE "payments" (
-    "id" UUID NOT NULL,
-    "installmentId" UUID NOT NULL,
-    "gateway" "PaymentGateway" NOT NULL,
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "installmentId" TEXT NOT NULL,
+    "gateway" TEXT NOT NULL,
     "gatewayPaymentId" TEXT,
     "trxId" TEXT,
     "amount" BIGINT NOT NULL,
-    "status" "PaymentStatus" NOT NULL DEFAULT 'INITIATED',
-    "method" "PaymentMethod" NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'INITIATED',
+    "method" TEXT NOT NULL,
     "manualReference" TEXT,
     "note" TEXT,
     "receiptNumber" TEXT,
-    "recordedByAdminId" UUID,
+    "recordedByAdminId" TEXT,
     "rawResponse" JSONB,
     "failureReason" TEXT,
-    "completedAt" TIMESTAMP(3),
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "payments_pkey" PRIMARY KEY ("id")
+    "completedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "payments_installmentId_fkey" FOREIGN KEY ("installmentId") REFERENCES "installments" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "payments_recordedByAdminId_fkey" FOREIGN KEY ("recordedByAdminId") REFERENCES "admins" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "payments_gateway_valid" CHECK ("gateway" IN ('BKASH', 'NAGAD', 'MANUAL')),
+    CONSTRAINT "payments_status_valid" CHECK ("status" IN ('INITIATED', 'PENDING', 'SUCCESS', 'FAILED', 'CANCELLED', 'REFUNDED')),
+    CONSTRAINT "payments_method_valid" CHECK ("method" IN ('BKASH', 'CASH', 'BANK', 'OTHER')),
+    CONSTRAINT "payments_amount_positive" CHECK ("amount" > 0),
+    -- a manual (cash/bank) entry always carries a reference; a bKash gateway
+    -- payment is identified by its gateway ids instead
+    CONSTRAINT "payments_manual_reference_required" CHECK (
+        ("method" = 'BKASH' AND "gateway" = 'BKASH')
+        OR ("manualReference" IS NOT NULL AND length(trim("manualReference")) >= 3)
+    )
 );
 
 -- CreateTable
 CREATE TABLE "audit_logs" (
-    "id" UUID NOT NULL,
-    "adminId" UUID,
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "adminId" TEXT,
     "action" TEXT NOT NULL,
     "entity" TEXT NOT NULL,
     "entityId" TEXT,
@@ -164,36 +185,35 @@ CREATE TABLE "audit_logs" (
     "newValue" JSONB,
     "ip" TEXT,
     "userAgent" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "audit_logs_pkey" PRIMARY KEY ("id")
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "audit_logs_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "admins" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
 CREATE TABLE "sms_logs" (
-    "id" UUID NOT NULL,
-    "investorId" UUID,
-    "installmentId" UUID,
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "investorId" TEXT,
+    "installmentId" TEXT,
     "toMobile" TEXT NOT NULL,
     "body" TEXT NOT NULL,
     "provider" TEXT NOT NULL,
-    "purpose" "SmsPurpose" NOT NULL DEFAULT 'PAYMENT_LINK',
-    "status" "SmsStatus" NOT NULL DEFAULT 'QUEUED',
+    "purpose" TEXT NOT NULL DEFAULT 'PAYMENT_LINK',
+    "status" TEXT NOT NULL DEFAULT 'QUEUED',
     "providerMessageId" TEXT,
     "error" TEXT,
-    "sentAt" TIMESTAMP(3),
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "sms_logs_pkey" PRIMARY KEY ("id")
+    "sentAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "sms_logs_investorId_fkey" FOREIGN KEY ("investorId") REFERENCES "investors" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "sms_logs_installmentId_fkey" FOREIGN KEY ("installmentId") REFERENCES "installments" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "sms_logs_purpose_valid" CHECK ("purpose" IN ('PAYMENT_LINK', 'REMINDER_DUE', 'REMINDER_OVERDUE', 'MANUAL', 'BULK')),
+    CONSTRAINT "sms_logs_status_valid" CHECK ("status" IN ('QUEUED', 'SENT', 'FAILED'))
 );
 
 -- CreateTable
 CREATE TABLE "settings" (
-    "key" TEXT NOT NULL,
+    "key" TEXT NOT NULL PRIMARY KEY,
     "value" TEXT NOT NULL,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "settings_pkey" PRIMARY KEY ("key")
+    "updatedAt" DATETIME NOT NULL
 );
 
 -- CreateIndex
@@ -245,6 +265,9 @@ CREATE INDEX "investments_createdAt_idx" ON "investments"("createdAt");
 CREATE UNIQUE INDEX "installments_payTokenHash_key" ON "installments"("payTokenHash");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "installments_investmentId_serial_key" ON "installments"("investmentId", "serial");
+
+-- CreateIndex
 CREATE INDEX "installments_status_dueDate_idx" ON "installments"("status", "dueDate");
 
 -- CreateIndex
@@ -252,9 +275,6 @@ CREATE INDEX "installments_dueDate_idx" ON "installments"("dueDate");
 
 -- CreateIndex
 CREATE INDEX "installments_investmentId_idx" ON "installments"("investmentId");
-
--- CreateIndex
-CREATE UNIQUE INDEX "installments_investmentId_serial_key" ON "installments"("investmentId", "serial");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "payments_gatewayPaymentId_key" ON "payments"("gatewayPaymentId");
@@ -301,243 +321,74 @@ CREATE INDEX "sms_logs_createdAt_idx" ON "sms_logs"("createdAt");
 -- CreateIndex
 CREATE INDEX "sms_logs_status_idx" ON "sms_logs"("status");
 
--- AddForeignKey
-ALTER TABLE "refresh_tokens" ADD CONSTRAINT "refresh_tokens_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "admins"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- CreateIndex
+-- A gateway transaction id may only ever be used once. NULL (payments that are
+-- still INITIATED) is excluded, so a partial index - not a plain unique one.
+CREATE UNIQUE INDEX "payments_gateway_trx_id_key" ON "payments" ("gateway", "trxId") WHERE "trxId" IS NOT NULL;
 
--- AddForeignKey
-ALTER TABLE "nominees" ADD CONSTRAINT "nominees_investorId_fkey" FOREIGN KEY ("investorId") REFERENCES "investors"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- CreateIndex
+-- Fast "due / overdue" lookups used by the reminder + overdue jobs.
+CREATE INDEX "installments_open_due_idx" ON "installments" ("dueDate") WHERE "status" IN ('PENDING', 'PARTIALLY_PAID', 'OVERDUE');
 
--- AddForeignKey
-ALTER TABLE "investments" ADD CONSTRAINT "investments_investorId_fkey" FOREIGN KEY ("investorId") REFERENCES "investors"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+-- CreateIndex
+-- Fast reconciliation scan (pending gateway payments, oldest first).
+CREATE INDEX "payments_pending_gateway_idx" ON "payments" ("status", "createdAt") WHERE "status" IN ('INITIATED', 'PENDING');
 
--- AddForeignKey
-ALTER TABLE "installments" ADD CONSTRAINT "installments_investmentId_fkey" FOREIGN KEY ("investmentId") REFERENCES "investments"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "payments" ADD CONSTRAINT "payments_installmentId_fkey" FOREIGN KEY ("installmentId") REFERENCES "installments"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "payments" ADD CONSTRAINT "payments_recordedByAdminId_fkey" FOREIGN KEY ("recordedByAdminId") REFERENCES "admins"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "admins"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "sms_logs" ADD CONSTRAINT "sms_logs_investorId_fkey" FOREIGN KEY ("investorId") REFERENCES "investors"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "sms_logs" ADD CONSTRAINT "sms_logs_installmentId_fkey" FOREIGN KEY ("installmentId") REFERENCES "installments"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
+-- CreateIndex
+-- Dashboard / reports: "collected in period" scans only successful payments.
+CREATE INDEX "payments_success_completed_idx" ON "payments" ("completedAt") WHERE "status" = 'SUCCESS';
 
 -- ===========================================================================
 -- Hand-written hardening (cannot be expressed in the Prisma schema language)
 -- ===========================================================================
 
 -- ---------------------------------------------------------------------------
--- 1. Row Level Security
+-- 1. audit_logs is append-only
 --
--- Supabase exposes every table in the `public` schema through PostgREST to the
--- `anon` / `authenticated` roles. Enabling RLS with NO policies denies all
--- access to those roles while the owning role used by this Express server
--- (`postgres`) is unaffected. All database access therefore flows exclusively
--- through the server. Add policies here if a future version ever needs
--- client-side access.
+-- PostgreSQL used one trigger function for UPDATE and DELETE; SQLite triggers
+-- are per-event, so there are two. TRUNCATE does not exist in SQLite, and both
+-- events are blocked for every role - including the application.
 -- ---------------------------------------------------------------------------
-ALTER TABLE "admins"          ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "refresh_tokens"  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "investors"       ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "nominees"        ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "investments"     ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "installments"    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "payments"        ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "audit_logs"      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "sms_logs"        ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "settings"        ENABLE ROW LEVEL SECURITY;
-
--- Belt and braces for a fresh Supabase project: revoke the wide grants.
-REVOKE ALL ON ALL TABLES IN SCHEMA "public" FROM PUBLIC;
-ALTER DEFAULT PRIVILEGES IN SCHEMA "public" REVOKE ALL ON TABLES FROM PUBLIC;
-
--- ---------------------------------------------------------------------------
--- 2. audit_logs is append-only
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION audit_logs_block_mutation() RETURNS trigger AS $$
+CREATE TRIGGER "audit_logs_no_update"
+BEFORE UPDATE ON "audit_logs"
 BEGIN
-  RAISE EXCEPTION 'audit_logs is append-only (% is not permitted)', TG_OP
-    USING ERRCODE = '42501';
+  SELECT RAISE(ABORT, 'audit_logs is append-only (UPDATE is not permitted)');
 END;
-$$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS audit_logs_no_update_delete ON "audit_logs";
-CREATE TRIGGER audit_logs_no_update_delete
-  BEFORE UPDATE OR DELETE ON "audit_logs"
-  FOR EACH ROW EXECUTE FUNCTION audit_logs_block_mutation();
-
--- UPDATE and DELETE are blocked. TRUNCATE is intentionally NOT blocked: only a
--- superuser/owner can run it, which is the documented break-glass path for data
--- retention pruning and test teardown. The application never issues it.
-
--- ---------------------------------------------------------------------------
--- 3. Nominees: at most 3 per investor, shares must add up to exactly 100
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION nominees_max_three() RETURNS trigger AS $$
-DECLARE
-  nominee_count integer;
+CREATE TRIGGER "audit_logs_no_delete"
+BEFORE DELETE ON "audit_logs"
 BEGIN
-  SELECT COUNT(*) INTO nominee_count
-  FROM "nominees"
-  WHERE "investorId" = NEW."investorId"
-    AND ("id" <> NEW."id" OR TG_OP = 'INSERT');
-
-  IF nominee_count >= 3 THEN
-    RAISE EXCEPTION 'An investor may have at most 3 nominees (attempted to add a 4th)'
-      USING ERRCODE = '23514';
-  END IF;
-
-  IF NEW."sharePercent" IS NULL OR NEW."sharePercent" < 1 OR NEW."sharePercent" > 100 THEN
-    RAISE EXCEPTION 'Nominee sharePercent must be between 1 and 100' USING ERRCODE = '23514';
-  END IF;
-
-  RETURN NEW;
+  SELECT RAISE(ABORT, 'audit_logs is append-only (DELETE is not permitted)');
 END;
-$$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS nominees_max_three_guard ON "nominees";
-CREATE TRIGGER nominees_max_three_guard
-  BEFORE INSERT OR UPDATE ON "nominees"
-  FOR EACH ROW EXECUTE FUNCTION nominees_max_three();
-
--- Deferred: the shares only have to add up to 100 when the transaction commits,
--- so a multi-step edit inside one transaction is still possible.
-CREATE OR REPLACE FUNCTION nominees_validate_share_total() RETURNS trigger AS $$
-DECLARE
-  v_investor_id uuid;
-  v_total integer;
-  v_count integer;
+-- ---------------------------------------------------------------------------
+-- 2. Nominees: at most 3 per investor
+--
+-- The share-range and mobile-format rules are CHECK constraints above; the
+-- "shares add up to exactly 100" rule needs COMMIT-time visibility and is
+-- enforced by the service + `npm run db:check`.
+-- ---------------------------------------------------------------------------
+CREATE TRIGGER "nominees_max_three_guard_insert"
+BEFORE INSERT ON "nominees"
 BEGIN
-  v_investor_id := COALESCE(NEW."investorId", OLD."investorId");
-
-  SELECT COALESCE(SUM("sharePercent"), 0), COUNT(*) INTO v_total, v_count
-  FROM "nominees" WHERE "investorId" = v_investor_id;
-
-  IF v_count > 0 AND v_total <> 100 THEN
-    RAISE EXCEPTION 'Nominee shares for investor % add up to % (must be exactly 100)', v_investor_id, v_total
-      USING ERRCODE = '23514';
-  END IF;
-
-  RETURN NULL;
+  SELECT RAISE(ABORT, 'An investor may have at most 3 nominees (attempted to add a 4th)')
+  WHERE (SELECT COUNT(*) FROM "nominees" WHERE "investorId" = NEW."investorId") >= 3;
 END;
-$$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS nominees_share_total_guard ON "nominees";
-CREATE CONSTRAINT TRIGGER nominees_share_total_guard
-  AFTER INSERT OR UPDATE OR DELETE ON "nominees"
-  DEFERRABLE INITIALLY DEFERRED
-  FOR EACH ROW EXECUTE FUNCTION nominees_validate_share_total();
-
--- ---------------------------------------------------------------------------
--- 4. Installments must sum to the investment total (deferred to commit time)
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION installments_validate_total(p_investment_id uuid)
-RETURNS void AS $$
-DECLARE
-  v_total bigint;
-  v_sum   bigint;
-  v_count integer;
+CREATE TRIGGER "nominees_max_three_guard_update"
+BEFORE UPDATE ON "nominees"
 BEGIN
-  SELECT "totalAmount" INTO v_total FROM "investments" WHERE "id" = p_investment_id;
-  IF v_total IS NULL THEN
-    RETURN; -- investment is gone; nothing to validate
-  END IF;
-
-  SELECT COALESCE(SUM("amount"), 0), COUNT(*) INTO v_sum, v_count
-  FROM "installments" WHERE "investmentId" = p_investment_id;
-
-  IF v_count > 0 AND v_sum <> v_total THEN
-    RAISE EXCEPTION
-      'Installment amounts (%) must equal the investment total (%) for investment %', v_sum, v_total, p_investment_id
-      USING ERRCODE = '23514';
-  END IF;
+  SELECT RAISE(ABORT, 'An investor may have at most 3 nominees (attempted to add a 4th)')
+  WHERE (
+    SELECT COUNT(*) FROM "nominees"
+    WHERE "investorId" = NEW."investorId" AND "id" <> NEW."id"
+  ) >= 3;
 END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION installments_total_guard_fn() RETURNS trigger AS $$
-BEGIN
-  PERFORM installments_validate_total(COALESCE(NEW."investmentId", OLD."investmentId"));
-  RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS installments_total_guard ON "installments";
-CREATE CONSTRAINT TRIGGER installments_total_guard
-  AFTER INSERT OR UPDATE OR DELETE ON "installments"
-  DEFERRABLE INITIALLY DEFERRED
-  FOR EACH ROW EXECUTE FUNCTION installments_total_guard_fn();
-
-CREATE OR REPLACE FUNCTION investments_total_guard_fn() RETURNS trigger AS $$
-BEGIN
-  IF NEW."totalAmount" IS DISTINCT FROM OLD."totalAmount" THEN
-    PERFORM installments_validate_total(NEW."id");
-  END IF;
-  RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS investments_total_guard ON "investments";
-CREATE CONSTRAINT TRIGGER investments_total_guard
-  AFTER UPDATE ON "investments"
-  DEFERRABLE INITIALLY DEFERRED
-  FOR EACH ROW EXECUTE FUNCTION investments_total_guard_fn();
 
 -- ---------------------------------------------------------------------------
--- 5. Domain / money CHECK constraints (defence in depth for the integer
---    poisha rule: nothing negative, nothing fractional, no float drift)
+-- 3. Every table reachable only through the API
+--
+-- SQLite/Turso has no PostgREST-style HTTP surface and no row level security:
+-- the database is reachable only with the auth token, which lives in the
+-- server environment. Nothing to enable here - documented in the README.
 -- ---------------------------------------------------------------------------
-ALTER TABLE "investments"
-  ADD CONSTRAINT "investments_total_amount_positive" CHECK ("totalAmount" > 0),
-  ADD CONSTRAINT "investments_installment_count_range" CHECK ("installmentCount" >= 1 AND "installmentCount" <= 120);
-
-ALTER TABLE "installments"
-  ADD CONSTRAINT "installments_amount_positive" CHECK ("amount" > 0),
-  ADD CONSTRAINT "installments_paid_amount_valid" CHECK ("paidAmount" >= 0 AND "paidAmount" <= "amount"),
-  ADD CONSTRAINT "installments_serial_positive" CHECK ("serial" >= 1);
-
-ALTER TABLE "payments"
-  ADD CONSTRAINT "payments_amount_positive" CHECK ("amount" > 0),
-  ADD CONSTRAINT "payments_manual_reference_required"
-    CHECK (("method" = 'BKASH' AND "gateway" = 'BKASH') OR ("manualReference" IS NOT NULL AND length(btrim("manualReference")) >= 3));
-
-ALTER TABLE "investors"
-  ADD CONSTRAINT "investors_mobile_format" CHECK ("mobile" ~ '^\+?[0-9]{10,15}$');
-
-ALTER TABLE "nominees"
-  ADD CONSTRAINT "nominees_share_percent_range" CHECK ("sharePercent" >= 1 AND "sharePercent" <= 100),
-  ADD CONSTRAINT "nominees_mobile_format" CHECK ("mobile" ~ '^\+?[0-9]{10,15}$');
-
-ALTER TABLE "admins"
-  ADD CONSTRAINT "admins_failed_login_count_valid" CHECK ("failedLoginCount" >= 0);
-
--- ---------------------------------------------------------------------------
--- 6. Partial unique index: a gateway transaction id may only be used once
---    (NULL trxIds - e.g. payments still INITIATED - are ignored)
--- ---------------------------------------------------------------------------
-CREATE UNIQUE INDEX "payments_gateway_trx_id_key"
-  ON "payments" ("gateway", "trxId")
-  WHERE "trxId" IS NOT NULL;
-
--- ---------------------------------------------------------------------------
--- 7. Unique NID hash per investor (ignoring NULLs) - explicit index so the
---    intent is visible in the database, complementing the Prisma @unique.
--- ---------------------------------------------------------------------------
-CREATE UNIQUE INDEX IF NOT EXISTS "investors_nid_hash_key" ON "investors" ("nidHash") WHERE "nidHash" IS NOT NULL;
-
--- ---------------------------------------------------------------------------
--- 8. Fast "due / overdue" lookups used by the reminder + overdue jobs
--- ---------------------------------------------------------------------------
-CREATE INDEX IF NOT EXISTS "installments_open_due_idx"
-  ON "installments" ("dueDate")
-  WHERE "status" IN ('PENDING', 'PARTIALLY_PAID', 'OVERDUE');
-
-CREATE INDEX IF NOT EXISTS "payments_pending_gateway_idx"
-  ON "payments" ("status", "createdAt")
-  WHERE "status" IN ('INITIATED', 'PENDING');

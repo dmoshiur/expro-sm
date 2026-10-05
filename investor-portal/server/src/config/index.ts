@@ -39,8 +39,26 @@ const schema = z.object({
   APP_BASE_URL: z.string().default('http://localhost:5173'),
   TRUST_PROXY: int(1),
 
-  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-  DIRECT_URL: z.string().optional(),
+  // ------------------------------- Turso (libSQL) ---------------------------
+  // Primary connection string. Either a remote Turso URL
+  // (`libsql://<db>-<org>.turso.io`) or a local SQLite file (`file:./prisma/dev.db`).
+  // TURSO_DATABASE_URL wins; DATABASE_URL is accepted as an alias so existing
+  // deployments and platform integrations keep working.
+  TURSO_DATABASE_URL: z.string().optional(),
+  DATABASE_URL: z.string().optional(),
+  /** Required for remote (`libsql://`) databases; create one with `turso db tokens create`. */
+  TURSO_AUTH_TOKEN: z.string().optional(),
+  /**
+   * Optional embedded replica: when set, the URL above must point at a local
+   * file and this is the remote Turso database it syncs from. Reads hit the
+   * local file (single-digit ms), writes are forwarded to the primary.
+   */
+  TURSO_SYNC_URL: z.string().optional(),
+  /** Embedded replica sync interval in seconds (default 60). */
+  TURSO_SYNC_INTERVAL: z.string().optional(),
+  /** Optional key encrypting the local replica file at rest. */
+  TURSO_ENCRYPTION_KEY: z.string().optional(),
+  /** Database used by the Vitest suite (recreated on every `npm test`). */
   TEST_DATABASE_URL: z.string().optional(),
 
   JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
@@ -108,6 +126,24 @@ if (!parsed.success) {
 const env = parsed.data;
 const isProd = env.NODE_ENV === 'production';
 
+// ------------------------------- database ----------------------------------
+const databaseUrl = env.TURSO_DATABASE_URL ?? env.DATABASE_URL ?? 'file:./prisma/dev.db';
+const isRemoteDatabase = /^(libsql|https?|wss?|turso):/i.test(databaseUrl);
+const syncUrl = env.TURSO_SYNC_URL && env.TURSO_SYNC_URL.length > 0 ? env.TURSO_SYNC_URL : undefined;
+
+if (isRemoteDatabase && !env.TURSO_AUTH_TOKEN) {
+  throw new Error(
+    `[config] TURSO_AUTH_TOKEN is required for the remote database ${databaseUrl.replace(/\/\/.*@/, '//')}. ` +
+      'Create one with `turso db tokens create <db>` and store it as a secret (never in git).',
+  );
+}
+if (syncUrl && isRemoteDatabase) {
+  throw new Error(
+    '[config] TURSO_SYNC_URL enables an embedded replica, so TURSO_DATABASE_URL must point at a local file ' +
+      '(e.g. file:./prisma/replica.db).',
+  );
+}
+
 export const config = {
   env: env.NODE_ENV,
   isProd,
@@ -119,9 +155,17 @@ export const config = {
   appBaseUrl: env.APP_BASE_URL.replace(/\/$/, ''),
   trustProxy: env.TRUST_PROXY,
   db: {
-    url: env.DATABASE_URL,
-    directUrl: env.DIRECT_URL,
+    url: databaseUrl,
     testUrl: env.TEST_DATABASE_URL,
+    authToken: env.TURSO_AUTH_TOKEN,
+    isRemote: isRemoteDatabase,
+    /** embedded replica configuration (optional) */
+    syncUrl,
+    syncInterval: env.TURSO_SYNC_INTERVAL ? Number.parseInt(env.TURSO_SYNC_INTERVAL, 10) : 60,
+    encryptionKey: env.TURSO_ENCRYPTION_KEY,
+    get embeddedReplica() {
+      return Boolean(syncUrl);
+    },
   },
   auth: {
     accessSecret: env.JWT_ACCESS_SECRET,

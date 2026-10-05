@@ -7,7 +7,7 @@ and the server verifies the transaction with the gateway before marking the inst
 Everything is recorded in an append-only audit trail.
 
 ```
-Admin UI (React SPA)  ──HTTPS──▶  Express API  ──Prisma──▶  PostgreSQL (Supabase)
+Admin UI (React SPA)  ──HTTPS──▶  Express API  ──Prisma──▶  Turso (libSQL / SQLite)
         │                              │
         │                              ├── bKash Tokenized Checkout (sandbox / live)
         │                              ├── SMS gateway (local BD provider or console)
@@ -19,7 +19,7 @@ Admin UI (React SPA)  ──HTTPS──▶  Express API  ──Prisma──▶  
 | Area | What it does |
 | --- | --- |
 | Investors | CRUD, search / filter / sort / paginate, photo, optional NID scan (encrypted + private), 1–3 nominees with shares that must total 100 %, soft delete |
-| Investments | Auto-split into N installments (integer **poisha**, remainder on the **last** installment), sum is validated by a deferred DB constraint, editable before payment, waive / cancel / reopen with reason |
+| Investments | Auto-split into N installments (integer **poisha**, remainder on the **last** installment), sum validated by the service on every write and re-checked by `npm run db:check`, editable before payment, waive / cancel / reopen with reason |
 | Payment links | 32-byte random token, only the SHA-256 hash stored, configurable expiry, regeneration invalidates the old link, sent by SMS (single + bulk) with a delivery log |
 | Payments | bKash Tokenized Checkout behind a gateway adapter, atomic settlement, idempotent callbacks, duplicate-transaction-id rejection, reconciliation cron, optional webhook, manual cash / bank entries |
 | Receipts | PDF receipt per successful payment (`pdfkit`), receipt numbers `RC-YYYYMM-XXXXXX` |
@@ -27,7 +27,8 @@ Admin UI (React SPA)  ──HTTPS──▶  Express API  ──Prisma──▶  
 | Reports | Due & overdue book, collection register, investor statement — screen + **Excel (OOXML, `exceljs`)** + **PDF** export, all exports audited |
 | Reminders | Daily cron (Asia/Dhaka): due-in-N-days and overdue SMS, deduplicated via `lastRemindedAt`, re-notify window for overdue |
 | Security | JWT in httpOnly + Secure + SameSite cookies with refresh rotation, argon2id, optional TOTP 2FA, account lockout, strict CORS, helmet, per-route rate limits, Zod on every route, AES-256-GCM for NID and 2FA secrets, masked PII in logs, request IDs |
-| Audit | Service-layer audit log with old/new values; DB trigger blocks `UPDATE`/`DELETE` on `audit_logs`; only read endpoints exist |
+| Audit | Service-layer audit log with old/new values; DB triggers block `UPDATE`/`DELETE` on `audit_logs`; only read endpoints exist |
+| Integrity | `npm run db:check` verifies the invariants SQLite cannot express as deferred triggers (installment sums, nominee shares, money types, orphans) |
 | RBAC | SUPER_ADMIN / ACCOUNTANT / VIEWER enforced by middleware — see `docs/permissions.md` |
 
 ## Monorepo layout
@@ -36,7 +37,7 @@ Admin UI (React SPA)  ──HTTPS──▶  Express API  ──Prisma──▶  
 investor-portal/
 ├── server/                      # Express + TypeScript API
 │   ├── src/
-│   │   ├── config/              # env schema + Prisma client (pg driver adapter)
+│   │   ├── config/              # env schema + Prisma client (libSQL/Turso driver adapter)
 │   │   ├── controllers/         # HTTP layer (thin)
 │   │   ├── routes/              # route tables + validation wiring
 │   │   ├── middleware/          # auth, RBAC, CSRF, rate limits, upload, errors
@@ -44,22 +45,23 @@ investor-portal/
 │   │   ├── jobs/                # node-cron scheduler (Asia/Dhaka) + swappable interface
 │   │   ├── validators/          # Zod schemas
 │   │   └── utils/               # money (poisha), dates (Dhaka), errors, encryption, permissions
-│   ├── prisma/                  # schema, SQL migration (RLS + triggers), seed
-│   ├── scripts/                 # prisma launcher, migration applier, db reset
-│   ├── tests/                   # Vitest + Supertest (136 tests)
+│   ├── prisma/                  # schema, SQL migration (checks + triggers), seed
+│   ├── scripts/                 # prisma launcher, libSQL migration applier, db reset,
+│   │                            # integrity checker, Turso backup
+│   ├── tests/                   # Vitest + Supertest (145 tests)
 │   └── server.ts                # bootstrap
 ├── client/                      # React + Vite + TS SPA (Tailwind, TanStack Query, RHF + Zod)
 │   ├── src/{pages,components,services,store,hooks,lib}
 │   └── tests/                   # Vitest + Testing Library (jsdom) component tests
 ├── deploy/                      # Nginx, PM2, backup scripts
-├── docs/                        # permissions, payment flow, OpenAPI, Postman
-└── scripts/local-postgres.sh    # zero-install local PostgreSQL for development
+└── docs/                        # permissions, payment flow, OpenAPI, Postman
 ```
 
 ## Requirements
 
 * Node.js **20+** (developed on 22) and npm 10+
-* PostgreSQL **16** — either [Supabase](https://supabase.com) or the bundled local server
+* A database: a [Turso](https://turso.tech) database in production, or a local SQLite file for
+  development and tests — no server, no Docker, no connection pooler
 * Optional: Cloudinary account (file storage), bKash sandbox credentials, SMS gateway account
 
 ## Quick start (local, 5 minutes)
@@ -68,12 +70,12 @@ investor-portal/
 git clone <repo> && cd investor-portal
 npm install                      # installs workspaces; prisma client generation is non-fatal here
 
-cp server/.env.example server/.env
+cp server/.env.example server/.env         # TURSO_DATABASE_URL=file:./prisma/dev.db by default
 cp client/.env.example client/.env
+# optional: set SEED_SUPER_ADMIN_PASSWORD=Admin@12345 in server/.env to match the
+# password used throughout the docs and the Postman collection
 
-./scripts/local-postgres.sh start          # downloads a pinned PostgreSQL 16 build (no root needed)
-                                            # creates investor_portal + investor_portal_test
-npm --workspace server run migrate:deploy  # applies prisma/migrations (RLS, triggers, constraints)
+npm --workspace server run db:migrate      # applies prisma/migrations to the local libSQL file
 npm --workspace server run seed            # creates the first SUPER_ADMIN + default settings
 
 npm run dev                                # API on :4000, SPA on :5173 (Vite proxies /api)
@@ -82,8 +84,8 @@ npm run dev                                # API on :4000, SPA on :5173 (Vite pr
 The seed prints the initial super-admin credentials exactly once:
 
 ```
-email:    admin@investorportal.local      (override with SEED_ADMIN_EMAIL)
-password: Admin@12345                     (override with SEED_ADMIN_PASSWORD)
+email:    admin@investorportal.local      (override with SEED_SUPER_ADMIN_EMAIL)
+password: printed once                    (set SEED_SUPER_ADMIN_PASSWORD to choose it)
 ```
 
 > Change the password immediately after the first sign-in, and enable 2FA from **Profile**.
@@ -101,8 +103,10 @@ npm --workspace server run seed:demo       # 6 investors, investments, some paid
 | Variable | Purpose |
 | --- | --- |
 | `NODE_ENV`, `PORT`, `APP_BASE_URL` | runtime mode, API port, public SPA base URL (used in SMS links and callback redirects) |
-| `DATABASE_URL`, `DIRECT_URL` | Supabase **pooler (6543)** for the app, **direct (5432)** for migrations |
-| `TEST_DATABASE_URL` | database used by the Vitest suite (reset on every run) |
+| `TURSO_DATABASE_URL` | the database the app talks to: `libsql://<db>-<org>.turso.io` (remote) or `file:./prisma/dev.db` (local). `DATABASE_URL` is accepted as an alias |
+| `TURSO_AUTH_TOKEN` | database token for a remote Turso database (**secret**, `turso db tokens create`) — required whenever the URL is not a `file:` URL |
+| `TURSO_SYNC_URL`, `TURSO_SYNC_INTERVAL`, `TURSO_ENCRYPTION_KEY` | optional **embedded replica**: read locally, write through to the primary |
+| `TEST_DATABASE_URL` | throwaway database used by the Vitest suite (dropped + re-migrated on every run) |
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL` | token signing and lifetimes (access 15 m, refresh 30 d by default) |
 | `COOKIE_DOMAIN`, `COOKIE_SECURE` | cookie scoping (`secure` forced on in production) |
 | `ENCRYPTION_KEY` | 32-byte hex key for AES-256-GCM (NID numbers, TOTP secrets) — **rotating it invalidates stored NIDs/2FA secrets** |
@@ -115,33 +119,68 @@ npm --workspace server run seed:demo       # 6 investors, investments, some paid
 | `CRON_TIMEZONE`, `CRON_OVERDUE_MARK`, `CRON_REMINDERS`, `CRON_RECONCILE`, `CRON_TOKEN_CLEANUP` | cron expressions (all evaluated in Asia/Dhaka) |
 | `RUN_JOBS` | `true` (default) starts the cron jobs in this process; set to `false` on every extra instance when scaling out |
 | `COMPANY_NAME`, `SUPPORT_MOBILE`, `RECEIPT_PREFIX` | branding on the public page, SMS and receipts |
-| `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, `SEED_DEMO` | seed script inputs |
+| `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD`, `SEED_SUPER_ADMIN_NAME`, `SEED_DEMO` | seed script inputs (password is generated when unset) |
 
 `client/.env` only needs `VITE_API_BASE_URL` (leave empty in development to use the Vite proxy).
 
-## Supabase setup
+## Turso setup
 
-1. Create a project, then copy the two connection strings from **Project settings → Database**:
-   * **Connection pooling** (port `6543`, `?pgbouncer=true`) → `DATABASE_URL`
-   * **Direct connection** (port `5432`) → `DIRECT_URL`
-2. Apply the migrations:
+1. Install the CLI and sign in, then create the database:
 
    ```bash
-   npm --workspace server run migrate:deploy      # uses DIRECT_URL for DDL
+   curl -sSfL https://get.tur.so/install.sh | bash
+   turso auth login
+   turso db create investor-portal
+   turso db show investor-portal --url        # -> TURSO_DATABASE_URL
+   turso db tokens create investor-portal     # -> TURSO_AUTH_TOKEN (store as a secret)
    ```
 
-   The migration enables **Row Level Security on every table with no policies**, so the
-   `anon` / `authenticated` PostgREST roles cannot read anything even if the anon key leaks.
-   The application connects as the database owner and is therefore not subject to RLS.
-3. Nothing else is required: the backend talks to PostgreSQL through Prisma only. There is **no
-   Supabase Auth, Realtime or client SDK** anywhere in the codebase, and the client never talks to
-   the database directly.
+2. Point `server/.env` at it and apply the migrations:
 
-> **Constraint note.** Both `migrations/…/migration.sql` and the Prisma schema carry the checks:
-> installment sums must equal the investment total *and* the installment count (deferred
-> constraint triggers), nominees ≤ 3, nominee shares total 100 %, `payments(gateway, trx_id)` is
-> unique when a transaction id exists, `investors.nid_hash` is unique, and `audit_logs` blocks
-> `UPDATE`/`DELETE`.
+   ```bash
+   TURSO_DATABASE_URL="libsql://investor-portal-<org>.turso.io"
+   TURSO_AUTH_TOKEN="..."
+
+   npm --workspace server run db:migrate      # applies prisma/migrations over libSQL
+   npm --workspace server run db:check        # verifies the integrity invariants
+   ```
+
+   `db:migrate` (scripts/apply-migrations.mjs) speaks libSQL directly, which is what makes remote
+   Turso migrations work at all: the Prisma CLI's schema engine cannot dial `libsql://` URLs (the
+   documented Turso flow is `prisma migrate diff` + `turso db shell`). Use `db:migrate` for both a
+   local file and the remote database — the same SQL, the same `_prisma_migrations` bookkeeping the
+   Prisma CLI uses.
+
+3. Nothing else is required: the backend talks to Turso through Prisma only. There is no client-side
+   database SDK anywhere in the codebase and the SPA never talks to the database directly. The
+   database is reachable only with `TURSO_AUTH_TOKEN`, so — unlike a Supabase project with a public
+   PostgREST endpoint — there is no second API surface to lock down (no RLS needed).
+
+4. Optional: give a far-away deployment local reads with an **embedded replica**:
+
+   ```bash
+   TURSO_DATABASE_URL="file:./prisma/replica.db"
+   TURSO_SYNC_URL="libsql://investor-portal-<org>.turso.io"
+   TURSO_AUTH_TOKEN="..."
+   TURSO_SYNC_INTERVAL=60
+   ```
+
+   Reads are served from the local file (sub-millisecond), writes are forwarded to the primary and
+   the replica catches up on the interval. Keep the replica file on a persistent volume.
+
+> **Constraint note.** The migration carries every check SQLite can express: installment amounts and
+> paid amounts are positive integers (`paidAmount <= amount`), installment count 1–120,
+> `payments(gateway, trxId)` is unique **when a transaction id exists** (partial index),
+> `investors.nidHash` is unique, mobile numbers must be Bangladeshi, every enum column has a CHECK
+> constraint, `audit_logs` blocks `UPDATE`/`DELETE` through triggers, and an investor can have at most
+> 3 nominees with shares between 1 and 100.
+>
+> Two PostgreSQL guarantees could **not** be ported: `SUM(installments) = investment.totalAmount` and
+> `SUM(nominee shares) = 100` were *deferred constraint triggers* (checked at COMMIT, which is what
+> made multi-step edits inside one transaction possible) and SQLite has no deferred triggers. They are
+> validated by the services on every write — the API returns `422` for an unbalanced schedule — and
+> `npm run db:check` re-verifies the stored data (run it in CI, in cron or after a restore). See
+> `scripts/lib/invariants.mjs`.
 
 ## Cloudinary setup
 
@@ -166,18 +205,34 @@ npm --workspace server run seed:demo       # 6 investors, investments, some paid
 
 Without credentials the API boots with the **mock gateway**: `startPayment` returns a redirect URL to
 the callback itself, and `mockGatewayControl` (test helper) can script completed / failed /
-cancelled / amount-mismatch outcomes. All 136 tests run against this mock.
+cancelled / amount-mismatch outcomes. All 145 tests run against this mock.
 
 ## Database migrations
 
 | Command | What it does |
 | --- | --- |
-| `npm --workspace server run migrate:deploy` | applies pending migrations (production) |
-| `npm --workspace server run migrate:dev` | `prisma migrate dev` for authoring new migrations |
-| `npm --workspace server run migrate:status` | shows migration state |
-| `node scripts/apply-migrations.mjs` | offline applier (no engine binaries required) used in restricted environments |
-| `npm --workspace server run db:reset` | drops the schema and re-applies every migration (destructive, dev only) |
-| `npm --workspace server run prisma:generate` | regenerates the Prisma client |
+| `npm --workspace server run db:migrate` | applies pending migrations to `TURSO_DATABASE_URL` (local file **or** remote Turso) |
+| `npm --workspace server run migrate:status` | lists applied / pending migrations |
+| `npm --workspace server run db:reset` | drops every table and re-applies all migrations (dev/test only, refuses remote URLs without `--force`) |
+| `npm --workspace server run db:check` | verifies the integrity invariants (see the constraint note above) |
+| `npm --workspace server run db:backup` | logical dump of schema + data to `server/backups/*.sql` |
+| `npm --workspace server run prisma:generate` | regenerates the Prisma client into `server/src/generated/prisma` |
+| `npm --workspace server run prisma:validate` | validates `prisma/schema.prisma` (offline: uses the bundled WASM engine) |
+
+Authoring a new migration:
+
+```bash
+# on a machine where the Prisma CLI can download its schema engine:
+npx prisma migrate diff --from-migrations prisma/migrations \
+  --to-schema-datamodel prisma/schema.prisma --shadow-database-url file:./prisma/shadow.db --script
+# then paste the SQL into prisma/migrations/<timestamp>_<name>/migration.sql and run db:migrate
+```
+
+Applying an existing dump/backup is plain SQL as well:
+
+```bash
+turso db shell investor-portal < server/backups/turso-2026-10-05.sql
+```
 
 ## Tests
 
@@ -190,7 +245,9 @@ npm run lint                   # both workspaces
 npm run build                  # server tsc + client vite build
 ```
 
-**Server** — Vitest + Supertest against real PostgreSQL and mocked bKash/SMS (136 tests).
+**Server** — Vitest + Supertest against a real libSQL/Turso database file and mocked bKash/SMS
+(145 tests). `npm test` drops and re-migrates `TEST_DATABASE_URL` first, so the suite is
+self-contained and needs no `.env` (see `tests/setup.ts`).
 **Client** — Vitest + Testing Library in jsdom (`client/tests`): form validation state, label/ref
 contracts of the shared primitives, etc.
 
@@ -211,7 +268,8 @@ append-only audit trigger.
 
 ```bash
 # 1. server
-sudo apt install -y nginx postgresql-client
+sudo apt install -y nginx
+curl -sSfL https://get.tur.so/install.sh | bash   # turso CLI (backups, ad-hoc SQL)
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
 sudo npm i -g pm2
 
@@ -239,6 +297,16 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d portal.example.com --redirect
 ```
 
+### Vercel (the repo ships a `vercel.json` with two services)
+
+The `client` service builds the SPA and the `server` service builds the API; `/api/*` is rewritten to
+the API. Set the environment variables on the **server** service
+(`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `ENCRYPTION_KEY`,
+`NID_HASH_PEPPER`, `CORS_ORIGINS=https://<your-domain>`, `APP_BASE_URL`, `API_BASE_URL`,
+`RUN_JOBS=false`) and run the migrations from your machine or CI
+(`npm --workspace server run db:migrate`) — the build itself only runs `prisma generate` + `tsc`.
+Because the database is remote libSQL there is no connection-pool problem to solve on serverless.
+
 Checklist before going live:
 
 * `NODE_ENV=production`, `COOKIE_SECURE=true`, real `JWT_*`/`ENCRYPTION_KEY` secrets (32-byte random)
@@ -247,8 +315,8 @@ Checklist before going live:
 * Cloudinary credentials set; bKash switched from `sandbox` to `live`
 * Cron jobs run **inside** the API process (node-cron, Asia/Dhaka). Keep exactly **one** PM2 instance
   in `fork` mode with `RUN_JOBS=true`; if you must scale out, set `RUN_JOBS=false` on the extra
-  instances so each job still runs exactly once (or move to `pg-boss`, see below)
-* Daily `pg_dump` backup scheduled (see below) and a restore rehearsed at least once
+  instances so each job still runs exactly once (or move the scheduler to a queue, see below)
+* Daily Turso backup scheduled (see below) and a restore rehearsed at least once
 
 ### In-process jobs
 
@@ -265,23 +333,30 @@ stay untouched.
 
 ## Backups
 
+Turso keeps managed snapshots, but keep an independent logical copy off the database host:
+
 ```bash
-# backup (cron: 02:15 daily)
-PGPASSWORD=... pg_dump -h <supabase-host> -p 5432 -U postgres -d postgres \
-  -F custom -f /var/backups/investor-portal-$(date +%F).dump
+# server-side dump (Turso CLI)
+turso db dump investor-portal --output /var/backups/investor-portal-$(date +%F).sql
+
+# or the dependency-free fallback used by deploy/backup.sh (works for a local
+# file and for a remote database, and for an embedded replica):
+npm --workspace server run db:backup -- --out /var/backups/investor-portal-$(date +%F).sql
 
 # restore (staging rehearsal)
-pg_restore --clean --if-exists -d postgres /var/backups/investor-portal-2026-10-04.dump
+turso db shell investor-portal < /var/backups/investor-portal-2026-10-04.sql
 ```
 
-`deploy/backup.sh` wraps the dump with retention (14 daily / 8 weekly files) and checksums.
-Supabase also takes managed snapshots — keep the logical dump as an independent copy, and store it
-off the database host.
+`deploy/backup.sh` wraps that with retention (14 daily / 8 weekly files) and checksums. For a
+point-in-time restore of a remote database prefer `turso db dump`; for an embedded replica the file
+itself is a valid snapshot (`VACUUM INTO` is the fastest way to copy it while the app runs).
 
 ## Security notes
 
-* **Money is never a float.** Every amount is an integer number of poisha (`BigInt` in Prisma);
-  the split puts the remainder on the last installment and the DB validates the sum.
+* **Money is never a float.** Every amount is an integer number of poisha (`BigInt` in Prisma, and
+  the libSQL driver runs with `intMode: 'bigint'` so nothing is ever coerced through a JS number);
+  the split puts the remainder on the last installment, the service validates the sum on every write
+  and `npm run db:check` verifies the stored data.
 * **A payment is only marked paid after server-side gateway verification**: the callback never
   trusts query parameters, it looks our own `paymentID` up, executes/queries the gateway and checks
   status, transaction id, exact amount and merchant invoice number before an atomic settlement
@@ -318,15 +393,21 @@ off the database host.
    single designated worker or switch the scheduler to pg-boss.
 9. **Asia/Dhaka is the business timezone** for due dates, reminders, cron and report buckets,
    regardless of the server timezone.
-10. **Audit is append-only and permanent.** `DELETE`/`UPDATE` are blocked by a trigger; retention is
-    a deliberate operations decision (see the migration comment about `TRUNCATE`).
+10. **Audit is append-only and permanent.** `DELETE`/`UPDATE` are blocked by triggers (the test
+    suite drops them only to wipe fixtures, then puts them straight back). Retention is a deliberate
+    operations decision — SQLite has no `TRUNCATE`, so pruning means deleting through a maintenance
+    role with the triggers temporarily dropped.
 11. **SMS is best-effort.** Delivery failures are logged per attempt and surfaced in the SMS log; the
     system never blocks a business action on an SMS provider.
 12. **NID is optional.** Many investors do not have a scanned NID to hand; the field is optional but
     encrypted and access-controlled when present.
-13. **The local PostgreSQL helper is for development only** (`scripts/local-postgres.sh`); production
-    uses Supabase or a managed PostgreSQL.
-14. **Rate limits are per IP and per account** with in-memory stores. Behind a load balancer, trust
+13. **SQLite is the whole database engine now.** That buys zero-ops, serverless-friendly storage and
+    single-digit-millisecond reads; in exchange, a few PostgreSQL-only features are gone (deferred
+    constraint triggers, native enums, RLS, `ILIKE`, `date_trunc`). What replaced them is documented in
+    the constraint note above and in `prisma/migrations/20260101000000_init/migration.sql`.
+14. **Case-insensitive search** relies on SQLite's `LIKE` (case-insensitive for ASCII); non-ASCII
+    text is compared case-sensitively.
+15. **Rate limits are per IP and per account** with in-memory stores. Behind a load balancer, trust
     `X-Forwarded-For` (the app already honours `trust proxy`) or move the store to Redis.
 
 ## Feature checklist
@@ -337,9 +418,9 @@ off the database host.
 | 2FA (TOTP) setup with QR + verify, super-admin reset | **Done** | secret encrypted with AES-256-GCM |
 | Admin management (create / role / enable / disable / unlock / reset password) | **Done** | SUPER_ADMIN only, audited |
 | Investors CRUD + search / filter / sort / pagination / soft delete | **Done** | mobile + NID hash uniqueness enforced |
-| Nominees (1–3, shares = 100 %) | **Done** | DB trigger + service validation, SUPER_ADMIN only |
+| Nominees (1–3, shares = 100 %) | **Done** | DB trigger for the count, service validation for the shares, SUPER_ADMIN only |
 | Photo & NID upload, NID privacy | **Done** | Cloudinary public/private + local fallback, signed URLs, audited views |
-| Investments with auto-split and remainder on the last installment | **Done** | integer poisha, DB-validated sum |
+| Investments with auto-split and remainder on the last installment | **Done** | integer poisha, service-validated sum + `db:check` |
 | Schedule editing before payment, live sum UI | **Done** | server rejects edits once money has arrived |
 | Waive / cancel / reopen with reason + audit | **Done** | |
 | Payment links (hash-only storage, expiry, regeneration, SMS) | **Done** | single + bulk send, SMS delivery log |
@@ -354,11 +435,12 @@ off the database host.
 | Reports: due/overdue, collection register, investor statement | **Done** | filters + pagination |
 | Excel (OOXML) and PDF exports | **Done** | `exceljs` workbooks with totals, exports audited |
 | Reminder cron with dedupe, overdue status job | **Done** | per-installment `lastRemindedAt`, re-notify window |
+| Integrity checker (`db:check`) + logical Turso backup (`db:backup`) | **Done** | `scripts/lib/invariants.mjs`, `scripts/turso-backup.mjs` |
 | Audit log UI with filters + old/new values | **Done** | append-only, DB trigger blocks UPDATE/DELETE |
 | Settings (link TTL, reminder lead time, branding) | **Done** | super admin, falls back to env |
 | RBAC matrix documented + tested on every route | **Done** | `docs/permissions.md`, route-inventory test |
 | Postman / OpenAPI | **Done** | `docs/openapi.yaml`, `docs/postman_collection.json` |
-| Automated tests | **Done** | 136 server tests (18 files) + 13 client component tests (3 files) |
+| Automated tests | **Done** | 145 server tests (20 files) + 13 client component tests (3 files) |
 | Deployment docs (Nginx, PM2, TLS, backup/restore) | **Done** | this README + `deploy/` |
 | pg-boss scheduler | **Partial** | interface in place and swappable; node-cron used by default |
 | Nagad / card gateways | **Not done** | adapter interface exists; only bKash implemented (out of scope for v1) |
@@ -373,5 +455,5 @@ off the database host.
 | 403 on API calls from the browser | the origin is not in `CORS_ORIGINS` (include scheme + port) |
 | SMS never arrives | `SMS_PROVIDER=console` prints to the API log and keeps an in-memory outbox; configure a real provider for delivery |
 | Payment stays PENDING | check `pm2 logs` for gateway errors, then run the reconciliation job (`POST` a manual settle is not possible by design) |
-| `migrate:deploy` cannot reach the database | use `DIRECT_URL` (port 5432) for migrations; the pooler does not support all DDL |
+| `db:migrate` cannot reach the database | check `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`; for a remote database the token must have write access (`turso db tokens create <db>`) |
 | Locked out | another super admin unlocks you, or `npm --workspace server run seed` recreates the first admin on an empty database |

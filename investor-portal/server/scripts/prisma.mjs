@@ -2,18 +2,26 @@
 /**
  * Offline-friendly Prisma CLI launcher.
  *
- * Why this exists: `prisma generate` / `prisma migrate` normally download
- * platform-specific Rust engines from binaries.prisma.sh at first use. On
- * air-gapped CI, some corporate networks and sandboxes that CDN is blocked.
+ * Why this exists: `prisma generate` / `prisma validate` normally phone home to
+ * binaries.prisma.sh to resolve a native *schema engine* binary - even though
+ * Prisma 7 parses and validates schemas with the WASM build that is already
+ * bundled inside the CLI. On air-gapped CI, restricted proxies and sandboxes
+ * that CDN is blocked, and the CLI fails before doing any real work.
  *
  * This launcher keeps the exact same SQL, migration files and Prisma APIs, but:
- *   1. loads server/.env (a prisma.config.ts is present, so Prisma itself no
- *      longer loads .env automatically), and
- *   2. when the native engines are NOT installed, points the generator at a
- *      stub library and enables the JavaScript/WASM schema engine. The client is
- *      generated with `engineType = "client"`: queries are executed by the WASM
- *      query compiler through the node-postgres driver adapter, so the native
- *      library is never opened at runtime.
+ *   1. loads server/.env (Prisma 7 does not load .env on its own), and
+ *   2. when no native engine binary is installed, points
+ *      PRISMA_SCHEMA_ENGINE_BINARY at a stub file. Commands that only parse the
+ *      schema - `generate`, `validate`, `format` - then run entirely on the
+ *      WASM build with no network access.
+ *
+ * Commands that really have to talk to a database (`prisma migrate *`,
+ * `prisma db *`, `prisma studio`) need the real engine and are therefore
+ * provisioned differently in this project:
+ *   - generate the SQL for a schema change with `prisma migrate diff --script`
+ *     on a machine with engine downloads, or hand-write it, then
+ *   - apply it with `npm run db:migrate` (scripts/apply-migrations.mjs), which
+ *     speaks libSQL directly and works against both `file:` and `libsql://`.
  *
  * On a machine with working engine downloads everything behaves exactly like
  * the vanilla CLI (the stub is only applied when the binaries are missing).
@@ -60,27 +68,32 @@ function enginesDirCandidates() {
   ];
 }
 
-function hasNativeEngines() {
-  const prefixes = ['libquery_engine', 'query-engine', 'schema-engine'];
+const SCHEMA_ENGINE_PREFIXES = ['schema-engine', 'migration-engine', 'libschema-engine'];
+
+function hasNativeSchemaEngine() {
   return enginesDirCandidates().some((dir) => {
     try {
       return fs
         .readdirSync(dir)
-        .some((file) => prefixes.some((prefix) => file.startsWith(prefix)));
+        .some((file) => SCHEMA_ENGINE_PREFIXES.some((prefix) => file.startsWith(prefix)));
     } catch {
       return false;
     }
   });
 }
 
-if (!hasNativeEngines()) {
+const schemaEngineFromEnv =
+  env.PRISMA_SCHEMA_ENGINE_BINARY ?? env.PRISMA_MIGRATION_ENGINE_BINARY;
+
+if (!hasNativeSchemaEngine() && !schemaEngineFromEnv) {
   const stubDir = path.join(os.tmpdir(), 'investor-portal-prisma-stub');
   fs.mkdirSync(stubDir, { recursive: true });
-  const stub = path.join(stubDir, 'libquery_engine.so.node');
-  if (!fs.existsSync(stub)) fs.writeFileSync(stub, 'prisma engine stub (unused: engineType=client)\n');
-  env.PRISMA_QUERY_ENGINE_LIBRARY = env.PRISMA_QUERY_ENGINE_LIBRARY ?? stub;
-  env.PRISMA_ENGINE = env.PRISMA_ENGINE ?? 'js';
-  process.stderr.write('[prisma-launcher] native engines missing -> using WASM schema engine + engineType=client\n');
+  const stub = path.join(stubDir, 'schema-engine');
+  if (!fs.existsSync(stub)) fs.writeFileSync(stub, 'prisma schema engine stub (WASM is used instead)\n');
+  env.PRISMA_SCHEMA_ENGINE_BINARY = stub;
+  process.stderr.write(
+    '[prisma-launcher] native engines missing -> using the bundled WASM engine (generate/validate/format work offline)\n',
+  );
 }
 
 // --------------------------------------------------------------- run -------

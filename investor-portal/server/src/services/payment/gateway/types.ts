@@ -5,7 +5,7 @@
  * to implement this interface and be registered in gateway/index.ts. Nothing in
  * the payment service knows anything about provider-specific payloads.
  */
-import type { PaymentGateway } from '@prisma/client';
+import type { PaymentGateway } from '../../../generated/prisma/client';
 
 export type GatewayTransactionStatus = 'Initiated' | 'Pending' | 'Completed' | 'Failed' | 'Cancelled' | 'Unknown';
 

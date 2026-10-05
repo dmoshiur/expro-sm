@@ -11,7 +11,7 @@
  *  - regenerating a link overwrites the hash, instantly invalidating the old one
  *  - lookups are constant time and never reveal *why* a token failed
  */
-import type { Prisma } from '@prisma/client';
+import type { Prisma } from '../../generated/prisma/client';
 import { config } from '../../config';
 import { prisma, type Tx } from '../../config/prisma';
 import { AuditAction, AuditEntity } from '../../utils/auditActions';

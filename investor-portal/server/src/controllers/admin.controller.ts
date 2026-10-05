@@ -6,7 +6,7 @@
  * disable themselves - that protects the last remaining super admin.
  */
 import type { Request, Response } from 'express';
-import type { Prisma } from '@prisma/client';
+import type { Prisma } from '../generated/prisma/client';
 import { prisma } from '../config/prisma';
 import * as authService from '../services/auth/auth.service';
 import { tokenService } from '../services/auth/token.service';
@@ -49,11 +49,14 @@ export async function listAdmins(req: Request, res: Response): Promise<void> {
   const where: Prisma.AdminWhereInput = {
     ...(query.role ? { role: query.role } : {}),
     ...(query.isActive === undefined ? {} : { isActive: query.isActive }),
+    // NOTE: SQLite's LIKE (what Prisma's `contains` compiles to) is case-insensitive for
+    // ASCII, so the PostgreSQL-only `mode: 'insensitive'` argument is not needed - SQLite
+    // rejects it. Non-ASCII text (e.g. Bangla) is compared case-sensitively.
     ...(query.search
       ? {
           OR: [
-            { name: { contains: query.search, mode: 'insensitive' } },
-            { email: { contains: query.search, mode: 'insensitive' } },
+            { name: { contains: query.search } },
+            { email: { contains: query.search } },
           ],
         }
       : {}),

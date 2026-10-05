@@ -216,16 +216,21 @@ export async function getSummary(months = 12): Promise<DashboardSummary> {
 }
 
 /**
- * Monthly collection series. One grouped SQL query instead of 12 round trips;
- * the timezone conversion happens in the database so month buckets match Dhaka.
+ * Monthly collection series. One grouped SQL query instead of 12 round trips.
+ *
+ * The timezone conversion happens in the database so month buckets match
+ * Dhaka: DateTime columns are stored as ISO-8601 UTC text by the libSQL driver
+ * adapter, and Bangladesh is a fixed UTC+6 (no DST), so `'+6 hours'` is exact.
+ * `SUM(amount)` comes back as a bigint because the driver runs with
+ * intMode: 'bigint' - it is stringified for the API layer.
  */
 export async function collectByMonth(months = 12): Promise<CollectionPoint[]> {
   const bounded = Math.min(Math.max(months, 1), 36);
   const from = addDhakaDays(startOfDhakaMonth(), -(bounded - 1) * 30); // generous lower bound
-  const rows = await prisma.$queryRaw<Array<{ month: string; total: string; count: number }>>`
-    SELECT to_char(date_trunc('month', ("completedAt" AT TIME ZONE 'Asia/Dhaka')), 'YYYY-MM') AS month,
-           SUM(amount)::text AS total,
-           COUNT(*)::int AS count
+  const rows = await prisma.$queryRaw<Array<{ month: string; total: bigint | number; count: bigint | number }>>`
+    SELECT strftime('%Y-%m', "completedAt", '+6 hours') AS month,
+           SUM(amount) AS total,
+           COUNT(*) AS count
     FROM payments
     WHERE status = 'SUCCESS'
       AND "completedAt" IS NOT NULL
@@ -233,7 +238,11 @@ export async function collectByMonth(months = 12): Promise<CollectionPoint[]> {
     GROUP BY 1
     ORDER BY 1
   `;
-  return rows.map((row) => ({ month: row.month, total: row.total, count: Number(row.count) }));
+  return rows.map((row) => ({
+    month: row.month,
+    total: String(row.total),
+    count: Number(row.count),
+  }));
 }
 
 async function getUpcoming() {

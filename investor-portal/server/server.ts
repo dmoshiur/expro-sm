@@ -9,18 +9,22 @@
  */
 import http from 'node:http';
 import { config } from './src/config';
-import { prisma, disconnectPrisma } from './src/config/prisma';
+import { connectDatabase, disconnectPrisma } from './src/config/prisma';
 import { createApp } from './src/app';
 import { logger } from './src/utils/logger';
 import { startJobs, stopJobs } from './src/jobs';
 
 async function bootstrap(): Promise<void> {
-  // Fail fast: a misconfigured DATABASE_URL must not surface as 500s later.
+  // Fail fast: a wrong Turso URL or expired auth token must not surface as 500s
+  // later. For a local `file:` database this also switches on WAL and the other
+  // connection pragmas (see src/config/prisma.ts).
   try {
-    await prisma.$queryRaw`SELECT 1`;
-    logger.info('database connection ok');
+    await connectDatabase();
   } catch (error) {
-    logger.error({ err: error }, 'cannot reach the database - check DATABASE_URL');
+    logger.error(
+      { err: error },
+      'cannot reach the database - check TURSO_DATABASE_URL / TURSO_AUTH_TOKEN (or the local file path)',
+    );
     process.exit(1);
   }
 

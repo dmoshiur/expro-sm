@@ -3,7 +3,7 @@
  * endpoint to update or delete entries, and the database rejects such writes.
  */
 import type { Request, Response } from 'express';
-import type { Prisma } from '@prisma/client';
+import type { Prisma } from '../generated/prisma/client';
 import { prisma } from '../config/prisma';
 import { buildPaginated, skipTake } from '../utils/http';
 import { asyncHandler } from '../utils/asyncHandler';
@@ -22,7 +22,10 @@ export const listAuditLogs = asyncHandler(async (req: Request, res: Response) =>
 
   const where: Prisma.AuditLogWhereInput = {
     ...(query.adminId ? { adminId: query.adminId } : {}),
-    ...(query.action ? { action: { contains: query.action, mode: 'insensitive' } } : {}),
+    // NOTE: SQLite's LIKE (what Prisma's `contains` compiles to) is case-insensitive for
+    // ASCII, so the PostgreSQL-only `mode: 'insensitive'` argument is not needed - SQLite
+    // rejects it. Non-ASCII text (e.g. Bangla) is compared case-sensitively.
+    ...(query.action ? { action: { contains: query.action } } : {}),
     ...(query.entity ? { entity: query.entity } : {}),
     ...(query.entityId ? { entityId: query.entityId } : {}),
     ...(query.from || query.to

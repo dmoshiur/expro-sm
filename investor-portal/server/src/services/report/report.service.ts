@@ -5,7 +5,7 @@
  * Everything is paginated and filterable; exports reuse the same queries so the
  * numbers on screen and in the spreadsheet always agree.
  */
-import type { Prisma } from '@prisma/client';
+import type { Prisma } from '../../generated/prisma/client';
 import { prisma } from '../../config/prisma';
 import { buildPaginated, skipTake } from '../../utils/http';
 import { serializeMoney } from '../../utils/money';
