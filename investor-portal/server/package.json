@@ -18,6 +18,7 @@
     "test:coverage": "vitest run --coverage",
     "prisma:generate": "node scripts/prisma.mjs generate",
     "prisma:validate": "node scripts/prisma.mjs validate",
+    "env:check": "tsx scripts/check-env.ts",
     "db:migrate": "node scripts/apply-migrations.mjs",
     "migrate:deploy": "node scripts/apply-migrations.mjs",
     "migrate:status": "node scripts/apply-migrations.mjs --status",

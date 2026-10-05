@@ -117,7 +117,7 @@ npm --workspace server run seed:demo       # 6 investors, investments, some paid
 | `STORAGE_DRIVER`, `LOCAL_STORAGE_DIR`, `CLOUDINARY_*` | `auto` uses Cloudinary when configured, otherwise local disk in development; hosted deployments require Cloudinary explicitly |
 | `PAYMENT_LINK_TTL_DAYS`, `REMINDER_DAYS_BEFORE`, `REMINDER_ENABLED` | defaults; super admins can override the first two in **Settings** |
 | `CRON_TIMEZONE`, `CRON_OVERDUE_MARK`, `CRON_REMINDERS`, `CRON_RECONCILE`, `CRON_TOKEN_CLEANUP` | cron expressions (all evaluated in Asia/Dhaka) |
-| `RUN_JOBS` | `true` starts node-cron in a long-lived Node process; set `false` on Vercel and all API replicas, then run one dedicated worker/scheduler |
+| `RUN_JOBS` | `true` starts node-cron in a long-lived Node process. Always off on Vercel (serverless); set `false` on scaled-out API replicas and run one dedicated worker/scheduler |
 | `COMPANY_NAME`, `SUPPORT_MOBILE`, `RECEIPT_PREFIX` | branding on the public page, SMS and receipts |
 | `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD`, `SEED_SUPER_ADMIN_NAME`, `SEED_DEMO` | seed script inputs (password is generated when unset) |
 
@@ -323,8 +323,25 @@ Two details in that `vercel.json` are load-bearing; do not "simplify" them:
 
 Prisma is the ORM/client, not the database host. Production requests use the configured hosted
 libSQL database through `@prisma/adapter-libsql`; the local `file:./prisma/dev.db` URL is for
-local development/tests only. Production and Vercel startup now fail with a list of missing settings
-instead of silently falling back to a local SQLite file, ephemeral disk, or mock bKash gateway.
+local development/tests only. Production never silently falls back to a local SQLite file,
+ephemeral disk, a console SMS gateway or the mock bKash gateway: every missing setting is collected
+at startup and reported with the subsystem it blocks.
+
+How that report reaches you matters, so do not "simplify" it either:
+
+* **Missing core settings** (`TURSO_*`, `JWT_*`, `ENCRYPTION_KEY`, `NID_HASH_PEPPER`, cookies,
+  `CORS_ORIGINS`, `APP_BASE_URL`, `API_BASE_URL`) make every request answer
+  `503 SERVICE_UNAVAILABLE` with the exact list in `error.details.problems`. The function still
+  boots, so a half-configured deployment tells you what is missing instead of returning the opaque
+  `500 FUNCTION_INVOCATION_FAILED` on every `/api/*` route (`config` would previously throw at
+  import time, which kills the whole serverless function - including `/health` and the login).
+* **Feature settings** (`STORAGE_DRIVER`/Cloudinary → uploads, `BKASH_*` → the checkout,
+  `SMS_*` → payment-link/reminder SMS) are scoped: the rest of the portal keeps working, and only
+  the unconfigured feature fails closed with its own 503. Missing bKash or SMS credentials must not
+  prevent an administrator from logging in.
+* `RUN_JOBS` is forced off on Vercel (in-process node-cron cannot run in a serverless function), so
+  there is nothing to set there; don't re-add a guardrail that demands `RUN_JOBS=false`.
+
 Uploads use Cloudinary in production; local uploads remain a development/test adapter.
 
 Add these values to the Vercel project's **Production** environment (use isolated Turso/Cloudinary
@@ -356,7 +373,7 @@ SMS_PROVIDER=bulksmsbd
 SMS_API_URL=https://<your-sms-provider>/api/send
 SMS_API_KEY=<SMS provider key>
 SMS_SENDER_ID=<approved sender ID>
-RUN_JOBS=false
+# RUN_JOBS is not needed here: jobs are always off on Vercel
 ```
 
 Vercel injects environment variables at runtime; it does not need a `.env` file or the `dotenv`
@@ -364,9 +381,22 @@ package. Apply database migrations from CI or a trusted local machine with the s
 before sending traffic (`npm --workspace server run db:migrate`). The Vercel build only generates the
 Prisma client and compiles the server; it never applies schema changes to production automatically.
 
-Do not run the Node cron scheduler in a Vercel function. Run exactly one long-lived worker/server
-with `RUN_JOBS=true` on a persistent Node/container host, or move the scheduled jobs to a managed
-queue/scheduler. Set `RUN_JOBS=false` on the Vercel service and on any additional API instances.
+Check the environment before deploying it, with the exact rules the server enforces at boot:
+
+```bash
+vercel env pull .env.production      # or copy the values from the dashboard
+npm --workspace server run env:check -- --env-file .env.production
+#   -> lists every missing/invalid setting with its scope and exits non-zero when something is missing
+# `--self-hosted` checks a VPS/container deployment instead of Vercel production; `--json` is for CI.
+```
+
+A 503 from a deployed API carries the same list in `error.details.problems` (`curl -s https://<app>/api/health`
+shows it too), so the dashboard logs are not the only way to find out what is missing.
+
+Do not run the Node cron scheduler in a Vercel function: jobs are automatically disabled there
+(`config.runJobs` is false on Vercel) and no `RUN_JOBS` value is needed. Run exactly one long-lived
+worker/server with `RUN_JOBS=true` on a persistent Node/container host, or move the scheduled jobs to
+a managed queue/scheduler; set `RUN_JOBS=false` on any additional API instances you scale out.
 
 Checklist before going live:
 
