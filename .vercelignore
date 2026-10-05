@@ -20,6 +20,11 @@ investor-portal/docs/
 investor-portal/deploy/
 investor-portal/README.md
 
+# Secrets / local env files (Vercel injects production secrets at runtime)
+**/.env
+**/.env.*
+!**/.env.example
+
 # Git
 .git/
 .gitignore

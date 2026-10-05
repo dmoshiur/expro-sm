@@ -17,6 +17,7 @@ export type ErrorCode =
   | 'UNPROCESSABLE'
   | 'RATE_LIMITED'
   | 'PAYMENT_ERROR'
+  | 'SERVICE_UNAVAILABLE'
   | 'INTERNAL';
 
 export interface FieldIssue {
@@ -72,6 +73,9 @@ export const rateLimited = (message = 'Too many requests, please try again later
 
 export const paymentError = (message = 'Payment could not be completed') =>
   new AppError(402, 'PAYMENT_ERROR', message);
+
+export const serviceUnavailable = (message = 'Service temporarily unavailable') =>
+  new AppError(503, 'SERVICE_UNAVAILABLE', message);
 
 export const internal = (message = 'Something went wrong', cause?: unknown) =>
   new AppError(500, 'INTERNAL', message, { cause, expected: false });

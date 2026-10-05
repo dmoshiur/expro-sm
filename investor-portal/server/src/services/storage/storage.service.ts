@@ -171,7 +171,7 @@ export function createCloudinaryAdapter(): StorageAdapter {
 // Local filesystem (development / tests / air-gapped deployments)
 // ---------------------------------------------------------------------------
 
-const LOCAL_ROOT = path.resolve(process.cwd(), process.env.LOCAL_STORAGE_DIR ?? 'local-storage');
+const LOCAL_ROOT = path.resolve(process.cwd(), config.storage.localDir);
 
 function signLocal(publicId: string, expiresAt: number): string {
   return crypto
@@ -233,10 +233,10 @@ let adapter: StorageAdapter | null = null;
 
 export function getStorage(): StorageAdapter {
   if (adapter) return adapter;
-  const driver = (process.env.STORAGE_DRIVER ?? 'auto').toLowerCase();
+  const driver = config.storage.driver;
   if (driver === 'cloudinary' || (driver === 'auto' && config.cloudinary.enabled)) {
     if (!config.cloudinary.enabled) {
-      throw new Error('STORAGE_DRIVER=cloudinary requires CLOUDINARY_* credentials in server/.env');
+      throw new Error('STORAGE_DRIVER=cloudinary requires CLOUDINARY_* environment variables');
     }
     adapter = createCloudinaryAdapter();
   } else {

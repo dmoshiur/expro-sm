@@ -1,6 +1,5 @@
-import path from 'node:path';
-import dotenv from 'dotenv';
 import { defineConfig } from 'prisma/config';
+import { loadLocalEnvironment } from './src/config/load-local-env';
 
 /**
  * Prisma CLI configuration (Prisma ORM 7).
@@ -17,8 +16,7 @@ import { defineConfig } from 'prisma/config';
  *   file:./prisma/dev.db      local SQLite file (development / tests)
  *   libsql://<db>.turso.io    remote Turso database
  */
-dotenv.config({ path: path.resolve(__dirname, '.env') });
-dotenv.config(); // fall back to process.cwd() (PM2 ecosystem files, CI, tests)
+loadLocalEnvironment();
 
 const databaseUrl =
   process.env.TURSO_DATABASE_URL ??
