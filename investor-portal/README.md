@@ -308,6 +308,19 @@ serverless function. `server/server.ts` remains the entrypoint for long-running 
 and is not used by the Vercel service. This avoids opening a listening socket or starting a
 process-local cron scheduler inside a serverless function.
 
+Two details in that `vercel.json` are load-bearing; do not "simplify" them:
+
+* The `server` service root is `investor-portal`, **not** `investor-portal/server`. `investor-portal`
+  is the npm-workspace root, so it owns `package-lock.json` and the hoisted `node_modules`. Vercel
+  bundles a service from its root downward and cannot include files above it: a service rooted at
+  `investor-portal/server` ships a function with none of its dependencies and every `/api/*` request
+  dies at import time with `Cannot find module '<first dependency>'` (surfaced as
+  `500 FUNCTION_INVOCATION_FAILED`). Keep the root at the workspace root and point `entrypoint` at
+  `server/app.ts`.
+* The `client` service carries a service-scoped `/(.*) -> /index.html` rewrite. Without it the SPA's
+  static file server answers deep links such as `/login` with `404 NOT_FOUND`, because no file named
+  `login` exists. Top-level rewrites are evaluated first, so `/api/*` still reaches the server.
+
 Prisma is the ORM/client, not the database host. Production requests use the configured hosted
 libSQL database through `@prisma/adapter-libsql`; the local `file:./prisma/dev.db` URL is for
 local development/tests only. Production and Vercel startup now fail with a list of missing settings
