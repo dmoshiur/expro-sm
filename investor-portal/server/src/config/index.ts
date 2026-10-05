@@ -4,10 +4,23 @@
  * Server configuration is validated at module load. A local server/.env file
  * is loaded for development/self-hosting; Vercel-provided environment variables
  * are used directly. Production rejects local-only service fallbacks.
+ *
+ * Problem handling: nothing here throws for *missing* settings any more. The
+ * problems are collected (with the subsystem they block, see ConfigProblem) and
+ * exported as `configProblems`; the app answers HTTP 503 with that exact list
+ * instead of the whole serverless function dying with an unhelpful
+ * `500 FUNCTION_INVOCATION_FAILED`. `assertHostedConfiguration` still exists for
+ * the self-hosted boot path and the unit tests, so the policy itself is
+ * unchanged: production never silently falls back to local SQLite, local disk,
+ * a console SMS gateway or the mock bKash gateway.
  */
 import { z } from 'zod';
 import { loadLocalEnvironment } from './load-local-env';
-import { assertHostedConfiguration } from './production';
+import {
+  collectHostedConfigurationProblems,
+  productionConfigUtils,
+  type ConfigProblem,
+} from './production';
 
 // Production providers inject environment variables directly. This helper only
 // reads a local .env for non-Vercel development/self-hosted processes.
@@ -62,12 +75,15 @@ const schema = z.object({
   /** Database used by the Vitest suite (recreated on every `npm test`). */
   TEST_DATABASE_URL: z.string().optional(),
 
-  JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
-  JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
+  // Secrets are required, but collected as configuration problems instead of a
+  // hard throw so a deployment can boot and report exactly what is missing
+  // (see `configProblems` below). Empty strings are treated as "not set".
+  JWT_ACCESS_SECRET: z.string().default(''),
+  JWT_REFRESH_SECRET: z.string().default(''),
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('7d'),
-  ENCRYPTION_KEY: z.string().min(16, 'ENCRYPTION_KEY must be at least 16 characters'),
-  NID_HASH_PEPPER: z.string().min(16, 'NID_HASH_PEPPER must be at least 16 characters'),
+  ENCRYPTION_KEY: z.string().default(''),
+  NID_HASH_PEPPER: z.string().default(''),
   COOKIE_DOMAIN: z.string().optional().transform((v) => (v && v.length > 0 ? v : undefined)),
   COOKIE_SECURE: bool(true),
   MAX_LOGIN_ATTEMPTS: int(5),
@@ -117,11 +133,24 @@ const schema = z.object({
   BCRYPT_ROUNDS: int(12),
 });
 
-const parsed = schema.safeParse(process.env);
+// Values that are structurally unusable (a bad enum, a non-numeric PORT, ...)
+// are reported as `core` problems and re-parsed without them, so one bad value
+// degrades to the 503 diagnostic instead of killing the import - the same
+// treatment missing settings get.
+const invalidEnvironmentProblems: string[] = [];
+let parsed = schema.safeParse(process.env);
 if (!parsed.success) {
-  const issues = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
-  console.error(`\n[config] Invalid environment configuration:\n${issues}\n`);
-  throw new Error('Invalid environment configuration. See .env.example.');
+  invalidEnvironmentProblems.push(...parsed.error.issues.map((i) => `${i.path.join('.') || '(env)'}: ${i.message}`));
+  const sanitized: NodeJS.ProcessEnv = { ...process.env };
+  for (const issue of parsed.error.issues) delete sanitized[String(issue.path[0])];
+  const retry = schema.safeParse(sanitized);
+  if (!retry.success) {
+    // Unreachable in practice: the retry only drops the variables that failed.
+    const issues = retry.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
+    console.error(`\n[config] Invalid environment configuration:\n${issues}\n`);
+    throw new Error('Invalid environment configuration. See .env.example.');
+  }
+  parsed = retry;
 }
 
 const env = parsed.data;
@@ -130,25 +159,13 @@ const bkashBaseUrl =
   (env.BKASH_MODE === 'live' ? 'https://tokenized.pay.bka.sh/v1.2.0-beta' : 'https://tokenized.sandbox.bka.sh/v1.2.0-beta');
 
 // ------------------------------- database ----------------------------------
-const databaseUrl = env.TURSO_DATABASE_URL ?? env.DATABASE_URL ?? 'file:./prisma/dev.db';
+// An env var set to '' (common on Vercel when a key was never given a value) is
+// treated as unset, so it can never shadow a real value or produce a bogus URL.
+const pick = (...values: Array<string | undefined>): string | undefined =>
+  values.map((value) => value?.trim()).find((value): value is string => Boolean(value && value.length > 0));
+const databaseUrl = pick(env.TURSO_DATABASE_URL, env.DATABASE_URL) ?? 'file:./prisma/dev.db';
 const isRemoteDatabase = /^(libsql|https?|wss?|turso):/i.test(databaseUrl);
-const syncUrl = env.TURSO_SYNC_URL && env.TURSO_SYNC_URL.length > 0 ? env.TURSO_SYNC_URL : undefined;
-
-if ((isRemoteDatabase || syncUrl) && !env.TURSO_AUTH_TOKEN) {
-  throw new Error(
-    '[config] TURSO_AUTH_TOKEN is required for the remote Turso database. ' +
-      'Create one with `turso db tokens create <db>` and store it as a secret (never in git).',
-  );
-}
-if (syncUrl && isRemoteDatabase) {
-  throw new Error(
-    '[config] TURSO_SYNC_URL enables an embedded replica, so TURSO_DATABASE_URL must point at a local file ' +
-      '(e.g. file:./prisma/replica.db).',
-  );
-}
-if (syncUrl && !/^(libsql|https):\/\//i.test(syncUrl)) {
-  throw new Error('[config] TURSO_SYNC_URL must use a remote libsql:// or https:// URL.');
-}
+const syncUrl = pick(env.TURSO_SYNC_URL);
 
 const isVercelDeployment =
   env.VERCEL_ENV === 'production' ||
@@ -156,28 +173,99 @@ const isVercelDeployment =
   (process.env.VERCEL === '1' && env.VERCEL_ENV !== 'development');
 const isProd = env.NODE_ENV === 'production' || isVercelDeployment;
 
+// --------------------------- configuration problems ------------------------
+// Collected (never thrown) so the API can answer HTTP 503 with the exact list
+// instead of crashing every request. `scope: 'core'` problems block the whole
+// API; feature scopes only disable the feature that needs them.
+const configProblems: ConfigProblem[] = invalidEnvironmentProblems.map((message) => ({
+  scope: 'core' as const,
+  message: `invalid environment value - ${message}`,
+}));
+const addProblem = (scope: ConfigProblem['scope'], message: string): void => {
+  configProblems.push({ scope, message });
+};
+
+for (const [name, value, minLength] of [
+  ['JWT_ACCESS_SECRET', env.JWT_ACCESS_SECRET, 32],
+  ['JWT_REFRESH_SECRET', env.JWT_REFRESH_SECRET, 32],
+  ['ENCRYPTION_KEY', env.ENCRYPTION_KEY, 16],
+  ['NID_HASH_PEPPER', env.NID_HASH_PEPPER, 16],
+] as const) {
+  if (!value.trim()) addProblem('core', `${name} is required`);
+  else if (value.trim().length < minLength) addProblem('core', `${name} must be at least ${minLength} characters`);
+}
+
+// Hosted deployments get the database rules below from
+// collectHostedConfigurationProblems() with deployment-specific wording; these
+// two cover development/self-hosted processes so a misconfigured remote URL is
+// still reported outside production.
+if (!isProd && (isRemoteDatabase || syncUrl) && !pick(env.TURSO_AUTH_TOKEN)) {
+  addProblem(
+    'core',
+    'TURSO_AUTH_TOKEN is required for the remote Turso database. ' +
+      'Create one with `turso db tokens create <db>` and store it as a secret (never in git).',
+  );
+}
+if (!isProd && syncUrl && isRemoteDatabase) {
+  addProblem(
+    'core',
+    'TURSO_SYNC_URL enables an embedded replica, so TURSO_DATABASE_URL must point at a local file ' +
+      '(e.g. file:./prisma/replica.db).',
+  );
+}
+if (syncUrl && !/^(libsql|https):\/\//i.test(syncUrl)) {
+  addProblem('core', 'TURSO_SYNC_URL must use a remote libsql:// or https:// URL.');
+}
+
 if (isProd) {
-  assertHostedConfiguration({
-    isVercel: isVercelDeployment,
-    isVercelPreview: env.VERCEL_ENV === 'preview',
-    databaseUrl,
-    syncUrl,
-    authToken: env.TURSO_AUTH_TOKEN,
-    storageDriver: env.STORAGE_DRIVER,
-    cloudinaryConfigured: Boolean(env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET),
-    bkashConfigured: Boolean(env.BKASH_APP_KEY && env.BKASH_APP_SECRET && env.BKASH_USERNAME && env.BKASH_PASSWORD),
-    bkashMode: env.BKASH_MODE,
-    bkashBaseUrl,
-    smsProvider: env.SMS_PROVIDER,
-    smsConfigured: Boolean(env.SMS_API_KEY && env.SMS_API_URL),
-    smsApiUrl: env.SMS_API_URL,
-    cookieSecure: env.COOKIE_SECURE,
-    corsOrigins: env.CORS_ORIGINS,
-    appBaseUrl: env.APP_BASE_URL,
-    apiBaseUrl: env.API_BASE_URL,
-    bkashCallbackUrl: env.BKASH_CALLBACK_URL,
-    runJobs: env.RUN_JOBS && !env.JOBS_DISABLED,
-  });
+  configProblems.push(
+    ...collectHostedConfigurationProblems({
+      isVercel: isVercelDeployment,
+      isVercelPreview: env.VERCEL_ENV === 'preview',
+      databaseUrl,
+      syncUrl,
+      authToken: env.TURSO_AUTH_TOKEN,
+      storageDriver: env.STORAGE_DRIVER,
+      cloudinaryConfigured: Boolean(env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET),
+      bkashConfigured: Boolean(env.BKASH_APP_KEY && env.BKASH_APP_SECRET && env.BKASH_USERNAME && env.BKASH_PASSWORD),
+      bkashMode: env.BKASH_MODE,
+      bkashBaseUrl,
+      smsProvider: env.SMS_PROVIDER,
+      smsConfigured: Boolean(env.SMS_API_KEY && env.SMS_API_URL),
+      smsApiUrl: env.SMS_API_URL,
+      cookieSecure: env.COOKIE_SECURE,
+      corsOrigins: env.CORS_ORIGINS,
+      appBaseUrl: env.APP_BASE_URL,
+      apiBaseUrl: env.API_BASE_URL,
+      bkashCallbackUrl: env.BKASH_CALLBACK_URL,
+      runJobs: env.RUN_JOBS && !env.JOBS_DISABLED,
+    }),
+  );
+}
+
+/**
+ * False when this process must not open a database at all: production without a
+ * hosted Turso URL/token (never fall back to a local file on a hosted runtime).
+ * `src/config/prisma.ts` refuses to build a client in that case.
+ */
+const hostedDatabaseReady =
+  productionConfigUtils.isRemoteLibsqlUrl(syncUrl ?? databaseUrl) &&
+  Boolean(pick(env.TURSO_AUTH_TOKEN)) &&
+  !(isVercelDeployment && Boolean(syncUrl));
+const databaseConfigured = !isProd || hostedDatabaseReady;
+
+// CONFIG_PROBLEMS_SILENT is only set by tooling that prints the problems in its
+// own format (`npm --workspace server run env:check`), never by the server.
+if (configProblems.length > 0 && process.env.CONFIG_PROBLEMS_SILENT !== '1') {
+  // One clear block at cold start; the same list is returned by the API (503)
+  // and shown by `npm --workspace server run env:check`.
+  console.error(
+    `\n[config] This deployment is missing ${configProblems.length} required setting(s):\n` +
+      `${configProblems.map((problem) => `  - [${problem.scope}] ${problem.message}`).join('\n')}\n` +
+      (configProblems.some((problem) => problem.scope === 'core')
+        ? '[config] Requests will receive HTTP 503 until the core settings above are provided.\n'
+        : '[config] The API will run; only the features listed above are disabled.\n'),
+  );
 }
 
 export const config = {
@@ -196,6 +284,8 @@ export const config = {
     testUrl: env.TEST_DATABASE_URL,
     authToken: env.TURSO_AUTH_TOKEN,
     isRemote: isRemoteDatabase,
+    /** false when this process must not open a database (see `hostedDatabaseReady`) */
+    configured: databaseConfigured,
     /** embedded replica configuration (optional) */
     syncUrl,
     syncInterval: env.TURSO_SYNC_INTERVAL ? Number.parseInt(env.TURSO_SYNC_INTERVAL, 10) : 60,
@@ -268,12 +358,27 @@ export const config = {
     reconcile: env.CRON_RECONCILE,
     tokenCleanup: env.CRON_TOKEN_CLEANUP,
   },
-  /** true when this process should start the cron jobs */
+  /**
+   * true when this process should start the cron jobs.
+   *
+   * In-process node-cron cannot survive in a serverless function (the process is
+   * frozen between requests), so jobs are always off on Vercel - no RUN_JOBS
+   * setting required. Self-hosted deployments keep RUN_JOBS=true in exactly one
+   * process and RUN_JOBS=false in the rest.
+   */
   get runJobs() {
-    return env.RUN_JOBS && !env.JOBS_DISABLED;
+    return env.RUN_JOBS && !env.JOBS_DISABLED && !isVercelDeployment;
   },
   logLevel: env.LOG_LEVEL,
 } as const;
+
+/**
+ * Every missing/invalid production setting with the subsystem it blocks.
+ * `scope: 'core'` problems make the API answer HTTP 503 (never a bare 500);
+ * feature scopes (storage/payments/sms) disable only that feature.
+ */
+export { configProblems };
+export type { ConfigProblem } from './production';
 
 /**
  * True when a browser origin may talk to the API (see utils/origin.ts).

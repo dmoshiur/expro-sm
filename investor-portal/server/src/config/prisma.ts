@@ -29,6 +29,7 @@ import path from 'node:path';
 import { PrismaLibSql } from '@prisma/adapter-libsql';
 import type { Config as LibsqlConfig } from '@libsql/client';
 import { config } from '../config';
+import { serviceUnavailable } from '../utils/errors';
 import { logger } from '../utils/logger';
 import { PrismaClient } from '../generated/prisma/client';
 
@@ -110,9 +111,44 @@ function createPrismaClient(): PrismaClient {
   return client;
 }
 
-export const prisma: PrismaClient = globalForPrisma.__prisma ?? createPrismaClient();
+/**
+ * Last-resort client used when production has no hosted database configured.
+ *
+ * The API gate (see `configProblems`) already answers such deployments with 503,
+ * but a never-created client also guarantees we never touch a local SQLite file
+ * on a hosted runtime: every call rejects with a clear service-unavailable error
+ * instead of creating `file:./prisma/dev.db` on an ephemeral read-only disk.
+ */
+function createUnavailableClient(message: string): PrismaClient {
+  const unavailable = (): unknown =>
+    new Proxy(
+      function unavailablePrismaCall() {
+        throw serviceUnavailable(message);
+      },
+      {
+        get(_target, property) {
+          if (typeof property === 'symbol' || property === 'then') return undefined;
+          return unavailable();
+        },
+        apply() {
+          throw serviceUnavailable(message);
+        },
+      },
+    );
+  return unavailable() as PrismaClient;
+}
 
-if (!config.isProd) {
+export const prisma: PrismaClient = config.db.configured
+  ? globalForPrisma.__prisma ?? createPrismaClient()
+  : createUnavailableClient(
+      'The database is not configured on this deployment. An administrator must set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN.',
+    );
+
+if (!config.db.configured) {
+  logger.error('refusing to open a database - production requires a hosted libSQL/Turso URL with TURSO_AUTH_TOKEN');
+}
+
+if (!config.isProd && config.db.configured) {
   globalForPrisma.__prisma = prisma;
 }
 
@@ -147,7 +183,11 @@ export async function connectDatabase(): Promise<void> {
 
 /** Graceful shutdown: closes Prisma (which closes the libSQL client). */
 export async function disconnectPrisma(): Promise<void> {
-  await prisma.$disconnect().catch(() => undefined);
+  try {
+    await prisma.$disconnect();
+  } catch {
+    // nothing to close (e.g. the database was never configured)
+  }
 }
 
 /** Transaction client type used by services. */

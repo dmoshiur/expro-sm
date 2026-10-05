@@ -20,7 +20,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { v2 as cloudinary } from 'cloudinary';
 import { config } from '../../config';
-import { badRequest } from '../../utils/errors';
+import { badRequest, serviceUnavailable } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 
 export type AssetVisibility = 'public' | 'private';
@@ -236,9 +236,15 @@ export function getStorage(): StorageAdapter {
   const driver = config.storage.driver;
   if (driver === 'cloudinary' || (driver === 'auto' && config.cloudinary.enabled)) {
     if (!config.cloudinary.enabled) {
-      throw new Error('STORAGE_DRIVER=cloudinary requires CLOUDINARY_* environment variables');
+      // Fail closed with an actionable 503 (never a bare 500, never local disk).
+      throw serviceUnavailable('File storage is not configured: set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.');
     }
     adapter = createCloudinaryAdapter();
+  } else if (config.isProd) {
+    // Production never writes uploads to the (ephemeral, non-durable) container
+    // disk: uploads are disabled until Cloudinary credentials are provided.
+    logger.error({ driver }, 'file storage is not configured - uploads are disabled on this deployment');
+    throw serviceUnavailable('File storage is not configured on this deployment. Please contact support.');
   } else {
     if (driver === 'auto') logger.warn('Cloudinary not configured - using local file storage');
     adapter = createLocalAdapter();

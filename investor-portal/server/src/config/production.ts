@@ -59,80 +59,115 @@ function isHttpsOriginPattern(value: string): boolean {
   }
 }
 
-/** Throws an actionable error instead of silently choosing local/dev services. */
-export function assertHostedConfiguration(input: HostedConfiguration): void {
-  const problems: string[] = [];
-  const label = input.isVercel ? 'Vercel' : 'production';
+/**
+ * Which part of the API a configuration problem blocks.
+ *
+ * `core`     the database, the auth secrets, cookies or the CORS/browser origin:
+ *            nothing can be served safely, so the whole API answers 503.
+ * `storage`  uploads only (Cloudinary credentials) - the rest of the portal runs.
+ * `payments` the bKash checkout only - the rest of the portal runs.
+ * `sms`      payment-link/reminder SMS only - the rest of the portal runs.
+ *
+ * Keeping the scope on every problem is what lets a half-configured deployment
+ * boot and *explain itself* (HTTP 503 with the exact list) instead of crashing
+ * the whole serverless function with an opaque FUNCTION_INVOCATION_FAILED.
+ */
+export type ConfigProblemScope = 'core' | 'storage' | 'payments' | 'sms';
+
+export interface ConfigProblem {
+  scope: ConfigProblemScope;
+  message: string;
+}
+
+/**
+ * Pure collector behind {@link assertHostedConfiguration}: returns every
+ * production problem with the subsystem it blocks. Never throws, so callers can
+ * choose between failing fast (self-hosted boot) and failing closed per feature
+ * (serverless: 503 + diagnostics).
+ */
+export function collectHostedConfigurationProblems(input: HostedConfiguration): ConfigProblem[] {
+  const problems: ConfigProblem[] = [];
+  const add = (scope: ConfigProblemScope, message: string) => {
+    problems.push({ scope, message });
+  };
   const remoteDatabaseUrl = input.syncUrl ?? input.databaseUrl;
 
   if (input.isVercel && input.syncUrl) {
-    problems.push('TURSO_SYNC_URL embedded replicas are not supported on Vercel; use the remote Turso URL directly');
+    add('core', 'TURSO_SYNC_URL embedded replicas are not supported on Vercel; use the remote Turso URL directly');
   }
   if (!isRemoteLibsqlUrl(remoteDatabaseUrl)) {
-    problems.push('TURSO_DATABASE_URL must target a hosted libSQL/Turso database (file: SQLite is development/test only)');
+    add('core', 'TURSO_DATABASE_URL must target a hosted libSQL/Turso database (file: SQLite is development/test only)');
   }
   if (!input.authToken?.trim()) {
-    problems.push('TURSO_AUTH_TOKEN is required for the hosted database');
+    add('core', 'TURSO_AUTH_TOKEN is required for the hosted database');
   }
 
   if (input.storageDriver !== 'cloudinary') {
-    problems.push('STORAGE_DRIVER must be "cloudinary"; local filesystem storage is not durable on hosted runtimes');
+    add('storage', 'STORAGE_DRIVER must be "cloudinary"; local filesystem storage is not durable on hosted runtimes');
   }
   if (!input.cloudinaryConfigured) {
-    problems.push('CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET are required');
+    add('storage', 'CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET are required');
   }
   if (!input.bkashConfigured) {
-    problems.push('all four BKASH_* credentials are required; the mock payment gateway is development/test only');
+    add('payments', 'all four BKASH_* credentials are required; the mock payment gateway is development/test only');
   }
   if (!isHttpsUrl(input.bkashBaseUrl)) {
-    problems.push('BKASH_BASE_URL must be an absolute https:// URL');
+    add('payments', 'BKASH_BASE_URL must be an absolute https:// URL');
   } else if (input.bkashMode === 'live' && /sandbox/i.test(input.bkashBaseUrl)) {
-    problems.push('BKASH_BASE_URL points to the sandbox while BKASH_MODE=live');
+    add('payments', 'BKASH_BASE_URL points to the sandbox while BKASH_MODE=live');
   } else if (input.bkashMode === 'sandbox' && !/sandbox/i.test(input.bkashBaseUrl)) {
-    problems.push('BKASH_BASE_URL must point to the sandbox while BKASH_MODE=sandbox');
+    add('payments', 'BKASH_BASE_URL must point to the sandbox while BKASH_MODE=sandbox');
   }
 
   if (input.smsProvider === 'console') {
-    problems.push('SMS_PROVIDER=console is development/test-only; choose a real SMS gateway');
+    add('sms', 'SMS_PROVIDER=console is development/test-only; choose a real SMS gateway');
   }
   if (!input.smsConfigured) {
-    problems.push('SMS_API_KEY and SMS_API_URL are required for the configured SMS gateway');
+    add('sms', 'SMS_API_KEY and SMS_API_URL are required for the configured SMS gateway');
   } else if (!isHttpsUrl(input.smsApiUrl)) {
-    problems.push('SMS_API_URL must use https:// so gateway credentials are protected in transit');
+    add('sms', 'SMS_API_URL must use https:// so gateway credentials are protected in transit');
   }
 
   if (!input.cookieSecure) {
-    problems.push('COOKIE_SECURE must be true when deployed over HTTPS');
+    add('core', 'COOKIE_SECURE must be true when deployed over HTTPS');
   }
 
   if (input.corsOrigins.length === 0) {
-    problems.push('CORS_ORIGINS must contain the deployed frontend origin');
+    add('core', 'CORS_ORIGINS must contain the deployed frontend origin');
   } else {
     for (const origin of input.corsOrigins) {
       if (!isHttpsOriginPattern(origin)) {
-        problems.push(`CORS_ORIGINS contains an invalid/non-HTTPS origin: ${origin}`);
+        add('core', `CORS_ORIGINS contains an invalid/non-HTTPS origin: ${origin}`);
         continue;
       }
       if (origin.includes('*') && !input.isVercelPreview) {
-        problems.push('CORS_ORIGINS wildcards are only allowed on Vercel Preview deployments');
+        add('core', 'CORS_ORIGINS wildcards are only allowed on Vercel Preview deployments');
       }
     }
   }
 
-  for (const [name, value] of [
-    ['APP_BASE_URL', input.appBaseUrl],
-    ['API_BASE_URL', input.apiBaseUrl],
-    ['BKASH_CALLBACK_URL', input.bkashCallbackUrl],
+  for (const [name, value, scope] of [
+    ['APP_BASE_URL', input.appBaseUrl, 'core'],
+    ['API_BASE_URL', input.apiBaseUrl, 'core'],
+    ['BKASH_CALLBACK_URL', input.bkashCallbackUrl, 'payments'],
   ] as const) {
-    if (!isHttpsUrl(value)) problems.push(`${name} must be an absolute https:// URL`);
+    if (!isHttpsUrl(value)) add(scope, `${name} must be an absolute https:// URL`);
   }
 
-  if (input.isVercel && input.runJobs) {
-    problems.push('set RUN_JOBS=false on Vercel; scheduled work must run in a single dedicated worker/cron');
-  }
+  // RUN_JOBS is intentionally not checked here: in-process cron cannot run in a
+  // serverless function, so `config.runJobs` is forced off on Vercel instead of
+  // requiring every deployment to remember RUN_JOBS=false.
+
+  return problems;
+}
+
+/** Throws an actionable error instead of silently choosing local/dev services. */
+export function assertHostedConfiguration(input: HostedConfiguration): void {
+  const problems = collectHostedConfigurationProblems(input);
+  const label = input.isVercel ? 'Vercel' : 'production';
 
   if (problems.length > 0) {
-    throw new Error(`[config] Invalid ${label} configuration:\n${problems.map((problem) => `  - ${problem}`).join('\n')}`);
+    throw new Error(`[config] Invalid ${label} configuration:\n${problems.map((problem) => `  - ${problem.message}`).join('\n')}`);
   }
 }
 

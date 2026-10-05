@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { assertHostedConfiguration, type HostedConfiguration } from '../src/config/production';
+import {
+  assertHostedConfiguration,
+  collectHostedConfigurationProblems,
+  type HostedConfiguration,
+} from '../src/config/production';
+import { configProblems } from '../src/config';
 
 const productionConfig: HostedConfiguration = {
   isVercel: true,
@@ -71,6 +76,38 @@ describe('hosted configuration guardrails', () => {
 
     expect(() => assertHostedConfiguration(replica)).not.toThrow();
     expect(() => assertHostedConfiguration({ ...replica, isVercel: true })).toThrow(/embedded replicas are not supported on Vercel/);
+  });
+
+  it('reports every problem with the subsystem it blocks', () => {
+    const problems = collectHostedConfigurationProblems({
+      ...productionConfig,
+      databaseUrl: 'file:./prisma/dev.db',
+      authToken: undefined,
+      storageDriver: 'auto',
+      cloudinaryConfigured: false,
+      bkashConfigured: false,
+      smsProvider: 'console',
+      smsConfigured: false,
+    });
+
+    const messages = (scope: string): string =>
+      problems
+        .filter((problem) => problem.scope === scope)
+        .map((problem) => problem.message)
+        .join('\n');
+
+    expect(messages('core')).toMatch(/hosted libSQL\/Turso database/);
+    expect(messages('storage')).toMatch(/STORAGE_DRIVER must be "cloudinary"/);
+    expect(messages('payments')).toMatch(/BKASH_\* credentials are required/);
+    expect(messages('sms')).toMatch(/SMS_PROVIDER=console/);
+  });
+
+  it('does not require RUN_JOBS=false on Vercel (in-process cron is forced off there)', () => {
+    expect(collectHostedConfigurationProblems({ ...productionConfig, runJobs: true })).toEqual([]);
+  });
+
+  it('has no configuration problems in the test environment (the API must not gate itself)', () => {
+    expect(configProblems).toEqual([]);
   });
 
   it('allows a single-label HTTPS wildcard only for Vercel Preview origins', () => {

@@ -58,7 +58,22 @@ export async function sendSms(input: SendSmsInput): Promise<SmsDeliveryResult> {
     },
   });
 
-  const result = await provider.send({ to: input.to, body: input.body });
+  // The console provider only writes to the log. In production that would report
+  // a delivery that never happened, so the attempt is failed with a clear reason
+  // (the caller/UI sees it, and the SMS log records it) instead of silently
+  // "sending" nothing. Real providers report their own configuration state.
+  const result =
+    config.isProd && provider.name === 'console'
+      ? {
+          provider: provider.name,
+          success: false,
+          error: 'SMS is not configured on this deployment (SMS_PROVIDER=console)',
+        }
+      : await provider.send({ to: input.to, body: input.body });
+
+  if (config.isProd && provider.name === 'console') {
+    logger.error({ purpose: input.purpose, to: input.to }, 'SMS not sent: no SMS gateway is configured');
+  }
 
   await prisma.smsLog.update({
     where: { id: log.id },
