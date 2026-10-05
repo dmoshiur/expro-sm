@@ -7,7 +7,7 @@
  *               NO admin management, NO NID.
  * VIEWER      : read-only dashboards + lists, masked sensitive fields.
  */
-import type { AdminRole } from '@prisma/client';
+import type { AdminRole } from '../generated/prisma/client';
 import { forbidden } from '../utils/errors';
 
 export type Permission =

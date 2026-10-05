@@ -4,7 +4,7 @@
  */
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
-import type { Admin } from '@prisma/client';
+import type { Admin } from '../../generated/prisma/client';
 import { config } from '../../config';
 import { prisma } from '../../config/prisma';
 import { badRequest, forbidden, NotFoundError, unauthorized } from '../../utils/errors';

@@ -1,27 +1,39 @@
 // ---------------------------------------------------------------------------
 // Investor Installment Portal - Prisma schema
 //
-// MONEY RULE: every monetary value is stored as INTEGER POISHA (1 BDT = 100
-// poisha) and is NEVER a float. Prisma maps BigInt -> PostgreSQL BIGINT and
-// -> JS BigInt. Formatting to BDT happens in the UI / receipt layer only.
+// DATABASE: Turso (libSQL / SQLite compatible).
+//   DATABASE_URL = libsql://<db>-<org>.turso.io   (remote, needs TURSO_AUTH_TOKEN)
+//   DATABASE_URL = file:./prisma/dev.db           (local development / tests)
 //
-// Production: Supabase Postgres.
-//   DATABASE_URL = pooler (pgbouncer, port 6543) - used by the app at runtime
-//   DIRECT_URL   = direct  (port 5432)           - used by `prisma migrate`
+// MONEY RULE: every monetary value is stored as INTEGER POISHA (1 BDT = 100
+// poisha) and is NEVER a float. SQLite INTEGER is a 64-bit signed integer, so
+// Prisma maps BigInt -> INTEGER and -> JS BigInt without any precision loss.
+// Formatting to BDT happens in the UI / receipt layer only.
+//
+// NOTES ON SQLITE/TURSO SEMANTICS
+//   * enums are stored as TEXT (Prisma keeps the enum API and validates the
+//     values in the client); the migration adds CHECK constraints as a second
+//     line of defence.
+//   * `Json` columns are stored as JSON text and are read/written by Prisma as
+//     normal JS objects.
+//   * DateTime values are stored as ISO-8601 UTC text by the libSQL driver
+//     adapter (see src/config/prisma.ts).
+//   * SQLite has no deferred constraint triggers, so the "installments must
+//     sum to the investment total" and "nominee shares = 100%" invariants are
+//     enforced in the service layer and verified by scripts/check-invariants.mjs.
 // ---------------------------------------------------------------------------
 
-// engineType = "client": the query compiler runs as WASM inside the Node
-// process through the node-postgres driver adapter, so the production image
-// contains no platform-specific Rust engine binaries.
+// engineType is not configurable in Prisma 7: the client is always the
+// Rust-free TypeScript client and always runs on a driver adapter.
 generator client {
-  provider   = "prisma-client-js"
-  engineType = "client"
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+  runtime      = "nodejs"
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "sqlite"
 }
 
 // ----------------------------- enums ---------------------------------------
@@ -91,7 +103,7 @@ enum SmsPurpose {
 // ----------------------------- admins --------------------------------------
 
 model Admin {
-  id               String    @id @default(uuid()) @db.Uuid
+  id               String    @id @default(uuid())
   name             String
   email            String    @unique
   passwordHash     String
@@ -117,8 +129,8 @@ model Admin {
 
 /// Refresh-token rotation store. Only the SHA-256 hash of the token is kept.
 model RefreshToken {
-  id             String    @id @default(uuid()) @db.Uuid
-  adminId        String    @db.Uuid
+  id             String    @id @default(uuid())
+  adminId        String
   tokenHash      String    @unique
   expiresAt      DateTime
   revokedAt      DateTime?
@@ -137,7 +149,7 @@ model RefreshToken {
 // ----------------------------- investors -----------------------------------
 
 model Investor {
-  id            String         @id @default(uuid()) @db.Uuid
+  id            String         @id @default(uuid())
   name          String
   mobile        String         @unique
   /// NID number, AES-256-GCM encrypted at rest
@@ -164,8 +176,8 @@ model Investor {
 }
 
 model Nominee {
-  id           String  @id @default(uuid()) @db.Uuid
-  investorId   String  @db.Uuid
+  id           String  @id @default(uuid())
+  investorId   String
   name         String
   relation     String
   mobile       String
@@ -185,8 +197,8 @@ model Nominee {
 // ----------------------------- investments ---------------------------------
 
 model Investment {
-  id               String           @id @default(uuid()) @db.Uuid
-  investorId       String           @db.Uuid
+  id               String           @id @default(uuid())
+  investorId       String
   totalAmount      BigInt
   installmentCount Int
   status           InvestmentStatus @default(ACTIVE)
@@ -204,22 +216,22 @@ model Investment {
 }
 
 model Installment {
-  id             String            @id @default(uuid()) @db.Uuid
-  investmentId   String            @db.Uuid
-  serial         Int
-  amount         BigInt
-  paidAmount     BigInt            @default(0)
-  dueDate        DateTime
-  status         InstallmentStatus @default(PENDING)
+  id              String            @id @default(uuid())
+  investmentId    String
+  serial          Int
+  amount          BigInt
+  paidAmount      BigInt            @default(0)
+  dueDate         DateTime
+  status          InstallmentStatus @default(PENDING)
   /// SHA-256 hash of the payment-link token. The raw token is NEVER stored.
-  payTokenHash   String?           @unique
-  tokenExpiresAt DateTime?
-  lastRemindedAt DateTime?
-  paidAt         DateTime?
-  waivedReason   String?
+  payTokenHash    String?           @unique
+  tokenExpiresAt  DateTime?
+  lastRemindedAt  DateTime?
+  paidAt          DateTime?
+  waivedReason    String?
   cancelledReason String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
   investment Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
   payments   Payment[]
@@ -235,28 +247,28 @@ model Installment {
 // ----------------------------- payments ------------------------------------
 
 model Payment {
-  id               String        @id @default(uuid()) @db.Uuid
-  installmentId    String        @db.Uuid
-  gateway          PaymentGateway
-  gatewayPaymentId String?       @unique
-  /// bKash/Nagad transaction id. Partial unique index on (gateway, trxid)
-  /// WHERE trxid IS NOT NULL is added in migration SQL (see migrations/).
-  trxId            String?
-  amount           BigInt
-  status           PaymentStatus @default(INITIATED)
-  method           PaymentMethod
-  manualReference  String?
-  note             String?
-  receiptNumber    String?       @unique
-  recordedByAdminId String?      @db.Uuid
-  rawResponse      Json?
-  failureReason    String?
-  completedAt      DateTime?
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  id                String        @id @default(uuid())
+  installmentId     String
+  gateway           PaymentGateway
+  gatewayPaymentId  String?       @unique
+  /// bKash/Nagad transaction id. A partial unique index on (gateway, trxId)
+  /// WHERE trxId IS NOT NULL is added in the migration SQL.
+  trxId             String?
+  amount            BigInt
+  status            PaymentStatus @default(INITIATED)
+  method            PaymentMethod
+  manualReference   String?
+  note              String?
+  receiptNumber     String?       @unique
+  recordedByAdminId String?
+  rawResponse       Json?
+  failureReason     String?
+  completedAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
-  installment      Installment @relation(fields: [installmentId], references: [id], onDelete: Cascade)
-  recordedByAdmin  Admin?      @relation("PaymentRecordedBy", fields: [recordedByAdminId], references: [id], onDelete: SetNull)
+  installment     Installment @relation(fields: [installmentId], references: [id], onDelete: Cascade)
+  recordedByAdmin Admin?      @relation("PaymentRecordedBy", fields: [recordedByAdminId], references: [id], onDelete: SetNull)
 
   @@index([installmentId])
   @@index([status])
@@ -268,10 +280,10 @@ model Payment {
 
 // ----------------------------- audit / sms / settings ----------------------
 
-/// Append-only. A DB trigger blocks UPDATE and DELETE (see migrations/).
+/// Append-only. DB triggers block UPDATE and DELETE (see the migration SQL).
 model AuditLog {
-  id        String   @id @default(uuid()) @db.Uuid
-  adminId   String?  @db.Uuid
+  id        String   @id @default(uuid())
+  adminId   String?
   action    String
   entity    String
   entityId  String?
@@ -291,9 +303,9 @@ model AuditLog {
 }
 
 model SmsLog {
-  id                String     @id @default(uuid()) @db.Uuid
-  investorId        String?    @db.Uuid
-  installmentId     String?    @db.Uuid
+  id                String     @id @default(uuid())
+  investorId        String?
+  installmentId     String?
   toMobile          String
   body              String
   provider          String

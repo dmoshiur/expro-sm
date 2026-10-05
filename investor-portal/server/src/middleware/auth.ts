@@ -7,7 +7,7 @@
  * - `requirePermission`: permission matrix from utils/permissions.ts
  * - `optionalAuth`    : attaches the admin when present, never rejects
  */
-import type { AdminRole } from '@prisma/client';
+import type { AdminRole } from '../generated/prisma/client';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { config } from '../config';
 import { prisma } from '../config/prisma';

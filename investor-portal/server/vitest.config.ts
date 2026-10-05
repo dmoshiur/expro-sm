@@ -5,7 +5,7 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     include: ['tests/**/*.test.ts'],
-    // The integration suite shares one PostgreSQL database, so files run
+    // The integration suite shares one Turso/libSQL database file, so files run
     // sequentially to keep fixtures deterministic.
     fileParallelism: false,
     sequence: { shuffle: false },

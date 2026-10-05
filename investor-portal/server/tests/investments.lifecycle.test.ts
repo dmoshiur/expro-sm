@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { findInvariantViolations } from '../scripts/lib/invariants.mjs';
 import { AuditAction } from '../src/utils/auditActions';
 import { addDhakaDays, formatDhakaDate, startOfDhakaDay } from '../src/utils/dates';
 import { auditRows, createTestAdmin, prisma, truncateAll } from './helpers/db';
@@ -51,7 +52,7 @@ describe('investments: creation, split, editing', () => {
     expect(audits[0]!.newValue).toMatchObject({ installmentCount: 3, totalAmount: '1000000' });
   });
 
-  it('never lets installments drift from the investment total (DB trigger as backstop)', async () => {
+  it('keeps installments aligned with the investment total (service guard + integrity checker)', async () => {
     const client = await superAdminClient();
     const investorId = await seedInvestor(client);
     const created = await client
@@ -59,21 +60,25 @@ describe('investments: creation, split, editing', () => {
       .send({ investorId, totalAmount: '5000', installmentCount: 2, firstDueDate: firstDue, interval: { unit: 'MONTH', value: 1 } })
       .expect(201);
 
-    const [first, second] = await prisma.installment.findMany({
+    const [first] = await prisma.installment.findMany({
       where: { investmentId: created.body.investment.id },
       orderBy: { serial: 'asc' },
     });
 
-    // a raw write that breaks the invariant must be rejected at COMMIT
-    await expect(
-      prisma.$transaction(async (tx) => {
-        await tx.installment.update({ where: { id: first!.id }, data: { amount: first!.amount - 100n } });
-      }),
-    ).rejects.toThrow(/must equal the investment total/i);
+    // The API refuses to re-price a schedule that no longer adds up (422), so a
+    // service-mediated write can never break the invariant...
+    await client
+      .put(`/api/investments/${created.body.investment.id}/installments`)
+      .send({ installments: [{ id: first!.id, amount: '1000' }] })
+      .expect(422);
 
     const unchanged = await prisma.installment.findUnique({ where: { id: first!.id } });
     expect(unchanged!.amount).toBe(first!.amount);
-    void second;
+
+    // ...and SQLite has no deferred constraint triggers, so `npm run db:check`
+    // is the backstop for raw SQL that bypasses the service entirely.
+    const violations = await findInvariantViolations((sql) => prisma.$queryRawUnsafe(sql));
+    expect(violations).toEqual([]);
   });
 
   it('rejects an edit whose amounts no longer add up', async () => {

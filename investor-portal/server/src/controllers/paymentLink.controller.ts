@@ -1,6 +1,6 @@
 /** Admin-facing payment link + SMS endpoints. */
 import type { Request, Response } from 'express';
-import type { Prisma } from '@prisma/client';
+import type { Prisma } from '../generated/prisma/client';
 import { prisma } from '../config/prisma';
 import * as linkService from '../services/payment/link.service';
 import type { LinkContext } from '../services/payment/link.service';
@@ -53,12 +53,15 @@ export async function listSmsLogs(req: Request, res: Response): Promise<void> {
     ...(query.installmentId ? { installmentId: query.installmentId } : {}),
     ...(query.status ? { status: query.status } : {}),
     ...(query.purpose ? { purpose: query.purpose } : {}),
+    // NOTE: SQLite's LIKE (what Prisma's `contains` compiles to) is case-insensitive for
+    // ASCII, so the PostgreSQL-only `mode: 'insensitive'` argument is not needed - SQLite
+    // rejects it. Non-ASCII text (e.g. Bangla) is compared case-sensitively.
     ...(query.search
       ? {
           OR: [
             { toMobile: { contains: query.search } },
-            { body: { contains: query.search, mode: 'insensitive' } },
-            { investor: { name: { contains: query.search, mode: 'insensitive' } } },
+            { body: { contains: query.search } },
+            { investor: { name: { contains: query.search } } },
           ],
         }
       : {}),

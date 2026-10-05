@@ -4,7 +4,7 @@
  * Adding a new gateway means implementing this interface and registering it in
  * providers/index.ts - nothing else in the codebase changes.
  */
-import type { SmsPurpose } from '@prisma/client';
+import type { SmsPurpose } from '../../generated/prisma/client';
 
 export interface SmsMessage {
   /** E.164 or local BD format; providers normalise it themselves */

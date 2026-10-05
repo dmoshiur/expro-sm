@@ -6,15 +6,19 @@
 **/coverage/
 
 # Local dev data
-pgdata/
 local-storage/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+backups/
 *.log
 
-# Docs & deploy helpers
+# Docs & deploy helpers (server/scripts is NOT ignored: the build runs
+# `npm run prisma:generate`, which uses scripts/prisma.mjs)
 investor-portal/docs/
 investor-portal/deploy/
-investor-portal/scripts/local-postgres.sh
-investor-portal/scripts/reset-db.mjs
+investor-portal/README.md
 
 # Git
 .git/

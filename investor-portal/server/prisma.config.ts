@@ -1,43 +1,33 @@
 import path from 'node:path';
-import { config as loadEnv } from 'dotenv';
+import dotenv from 'dotenv';
 import { defineConfig } from 'prisma/config';
 
 /**
- * Prisma CLI configuration.
+ * Prisma CLI configuration (Prisma ORM 7).
  *
- * `engine: 'js'` selects the JavaScript/WASM schema engine: `prisma generate`,
- * `prisma migrate` and `prisma db` talk to PostgreSQL through the node-postgres
- * driver adapter instead of downloading platform-specific Rust binaries.
- * Set PRISMA_ENGINE=classic to use the classic native engine instead.
+ * Prisma 7 no longer reads `.env` automatically, so we load it here and hand
+ * the connection string to the CLI through `datasource.url`.
+ *
+ * The CLI only needs a URL for the commands that talk to a database
+ * (`prisma migrate *`, `prisma db *`, `prisma studio`). The runtime uses the
+ * driver adapter in src/config/prisma.ts instead - and for a remote Turso
+ * database the migrations are applied by scripts/apply-migrations.mjs, which
+ * speaks libSQL directly (the schema engine cannot dial `libsql://` URLs).
+ *
+ *   file:./prisma/dev.db      local SQLite file (development / tests)
+ *   libsql://<db>.turso.io    remote Turso database
  */
-loadEnv({ path: path.resolve(__dirname, '.env') });
+dotenv.config({ path: path.resolve(__dirname, '.env') });
+dotenv.config(); // fall back to process.cwd() (PM2 ecosystem files, CI, tests)
 
-const useClassicEngine = process.env.PRISMA_ENGINE === 'classic';
 const databaseUrl =
-  process.env.DIRECT_URL ??
+  process.env.TURSO_DATABASE_URL ??
   process.env.DATABASE_URL ??
-  'postgresql://postgres:postgres@127.0.0.1:5432/investor_portal';
-
-const adapter = async () => {
-  const { PrismaPg } = await import('@prisma/adapter-pg');
-  return new PrismaPg({ connectionString: databaseUrl });
-};
+  'file:./prisma/dev.db';
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',
-  experimental: {
-    // required for the JS schema engine + driver adapters
-    adapter: true,
-  },
-  ...(useClassicEngine
-    ? {
-        engine: 'classic' as const,
-        datasource: { url: databaseUrl, shadowDatabaseUrl: process.env.SHADOW_DATABASE_URL },
-      }
-    : {
-        engine: 'js' as const,
-        adapter,
-      }),
+  datasource: { url: databaseUrl },
   migrations: {
     path: 'prisma/migrations',
     seed: 'tsx prisma/seed.ts',

@@ -6,6 +6,9 @@ node_modules/
 # builds
 dist/
 build/
+# Prisma 7 generates the client into the source tree (src/generated/prisma);
+# it is recreated by `npm install` / `npm run build` (prisma:generate)
+server/src/generated/
 client/dist/
 server/dist/
 *.tsbuildinfo
@@ -41,5 +44,13 @@ Thumbs.db
 test-results/
 *.lcov
 
-# local postgres helper data (kept OUTSIDE the repo, this is a safety net)
-pgdata/
+# local libSQL/SQLite databases (Turso data lives remotely; these are dev files)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+prisma/test.db
+prisma/dev.db
+prisma/replica.db
+server/backups/
+backups/

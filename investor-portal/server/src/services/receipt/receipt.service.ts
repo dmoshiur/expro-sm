@@ -7,7 +7,7 @@
  * installment blocks, total in words, and a signature line.
  */
 import PDFDocument from 'pdfkit';
-import type { Payment, Installment, Investment, Investor } from '@prisma/client';
+import type { Payment, Installment, Investment, Investor } from '../../generated/prisma/client';
 import { formatBdt } from '../../utils/money';
 import { formatDhakaDate, formatDhakaDateTime } from '../../utils/dates';
 import { maskMobile } from '../../utils/encryption';

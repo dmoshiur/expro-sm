@@ -9,7 +9,7 @@
  *  - investors are never hard deleted: `status` is flipped to INACTIVE
  *  - everything is audited with old/new values from the service layer
  */
-import type { AdminRole, InvestorStatus, Prisma } from '@prisma/client';
+import type { AdminRole, InvestorStatus, Prisma } from '../../generated/prisma/client';
 import { prisma, type Tx } from '../../config/prisma';
 import { AuditAction, AuditEntity } from '../../utils/auditActions';
 import { decryptSafe, encrypt, hmac, maskMobile, maskNid } from '../../utils/encryption';
@@ -139,12 +139,15 @@ export function validateNomineeShares(nominees: NomineeInput[]): void {
 export async function listInvestors(query: ListInvestorsQuery, role: AdminRole) {
   const where: Prisma.InvestorWhereInput = {
     ...(query.status ? { status: query.status } : {}),
+    // NOTE: SQLite's LIKE (what Prisma's `contains` compiles to) is case-insensitive for
+    // ASCII, so the PostgreSQL-only `mode: 'insensitive'` argument is not needed - SQLite
+    // rejects it. Non-ASCII text (e.g. Bangla) is compared case-sensitively.
     ...(query.search
       ? {
           OR: [
-            { name: { contains: query.search, mode: 'insensitive' } },
+            { name: { contains: query.search } },
             { mobile: { contains: query.search } },
-            { address: { contains: query.search, mode: 'insensitive' } },
+            { address: { contains: query.search } },
           ],
         }
       : {}),

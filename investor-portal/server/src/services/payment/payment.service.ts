@@ -17,7 +17,7 @@
  * Nothing outside this module may mark an installment as paid.
  */
 import crypto from 'node:crypto';
-import type { Payment, PaymentMethod, Prisma } from '@prisma/client';
+import type { Payment, PaymentMethod, Prisma } from '../../generated/prisma/client';
 import { config } from '../../config';
 import { prisma } from '../../config/prisma';
 import { AuditAction, AuditEntity } from '../../utils/auditActions';
@@ -712,14 +712,17 @@ export async function listPayments(query: {
           },
         }
       : {}),
+    // NOTE: SQLite's LIKE (what Prisma's `contains` compiles to) is case-insensitive for
+    // ASCII, so the PostgreSQL-only `mode: 'insensitive'` argument is not needed - SQLite
+    // rejects it. Non-ASCII text (e.g. Bangla) is compared case-sensitively.
     ...(query.search
       ? {
           OR: [
-            { trxId: { contains: query.search, mode: 'insensitive' } },
-            { gatewayPaymentId: { contains: query.search, mode: 'insensitive' } },
-            { manualReference: { contains: query.search, mode: 'insensitive' } },
-            { receiptNumber: { contains: query.search, mode: 'insensitive' } },
-            { installment: { investment: { investor: { name: { contains: query.search, mode: 'insensitive' } } } } },
+            { trxId: { contains: query.search } },
+            { gatewayPaymentId: { contains: query.search } },
+            { manualReference: { contains: query.search } },
+            { receiptNumber: { contains: query.search } },
+            { installment: { investment: { investor: { name: { contains: query.search } } } } },
           ],
         }
       : {}),
