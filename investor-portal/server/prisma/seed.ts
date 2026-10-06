@@ -8,25 +8,21 @@
  *
  * The first super admin is read from:
  *   SEED_SUPER_ADMIN_EMAIL     (default admin@investorportal.local)
- *   SEED_SUPER_ADMIN_PASSWORD  (default: a randomly generated strong password that
- *                               is printed once - never hardcode a password in prod)
+ *   SEED_SUPER_ADMIN_PASSWORD  (unset: random one-time password; on Vercel
+ *                               Production, an invalid value also falls back to
+ *                               a random password that is printed once)
  *   SEED_SUPER_ADMIN_NAME      (default "Super Admin")
  */
-import crypto from 'node:crypto';
 import argon2 from 'argon2';
 import { prisma, disconnectPrisma } from '../src/config/prisma';
 import { splitIntoInstallments, formatBdt } from '../src/utils/money';
 import { addDhakaDays, startOfDhakaDay } from '../src/utils/dates';
 import { encrypt, hmac, randomToken, sha256 } from '../src/utils/encryption';
-import { emailSchema, passwordSchema } from '../src/validators/auth.validator';
+import { emailSchema } from '../src/validators/auth.validator';
 import { logger } from '../src/utils/logger';
+import { resolveSeedPassword } from '../src/utils/seed-password';
 
 const ARGON_OPTIONS = { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const;
-
-function generatePassword(): string {
-  // 24 chars, guaranteed to satisfy the password policy
-  return `Ip${crypto.randomBytes(9).toString('base64url')}${crypto.randomInt(10, 99)}!`;
-}
 
 async function seedSuperAdmin(): Promise<void> {
   const requestedEmail = process.env.SEED_SUPER_ADMIN_EMAIL?.trim() || 'admin@investorportal.local';
@@ -55,12 +51,14 @@ async function seedSuperAdmin(): Promise<void> {
     return;
   }
 
-  const configuredPassword = process.env.SEED_SUPER_ADMIN_PASSWORD;
-  const generated = !configuredPassword?.trim();
-  const password = generated ? generatePassword() : configuredPassword!;
-  if (!passwordSchema.safeParse(password).success) {
-    throw new Error(
-      '[seed] SEED_SUPER_ADMIN_PASSWORD must be 10-200 characters, include a letter and number, and have no outer spaces',
+  const passwordSelection = resolveSeedPassword(
+    process.env.SEED_SUPER_ADMIN_PASSWORD,
+    process.env.VERCEL_ENV === 'production',
+  );
+  const { password, generated } = passwordSelection;
+  if (passwordSelection.invalidConfigured) {
+    logger.warn(
+      'SEED_SUPER_ADMIN_PASSWORD is invalid; using a generated one-time password instead. Save the credentials printed in the deployment logs.',
     );
   }
 

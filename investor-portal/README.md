@@ -394,11 +394,13 @@ settings. Preview and local builds skip all production database writes. If a mig
 the Production build fails instead of deploying an API against an incomplete database.
 
 Set `SEED_SUPER_ADMIN_EMAIL` and `SEED_SUPER_ADMIN_PASSWORD` in Vercel's Production environment
-before the first deployment to choose the initial login. If the password is omitted, the seed generates
-a cryptographically random one and prints it once in the server service's Vercel build logs; the default
-email is `admin@investorportal.local`. Treat that log as a secret and change the password immediately
-after login. Later deployments do not reset an existing admin password. Demo data is blocked on Vercel
-Production.
+before the first deployment to choose the initial login. The password must be 10-200 characters, include
+at least one letter and one number, and have no leading or trailing spaces. If it is omitted or invalid,
+the seed generates a cryptographically random password instead; an invalid value also produces a warning.
+The generated password is printed once in the server service's Vercel build logs. The default email is
+`admin@investorportal.local`. Treat that log as a secret and change the password immediately after login.
+Outside Vercel Production, an explicitly configured invalid password still fails fast. Later deployments
+do not reset an existing admin password. Demo data is blocked on Vercel Production.
 
 Check the environment before deploying it, with the exact rules the server enforces at boot:
 
