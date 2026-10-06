@@ -15,7 +15,7 @@
       "root": "investor-portal",
       "framework": "express",
       "entrypoint": "server/app.ts",
-      "buildCommand": "npm --workspace server run build"
+      "buildCommand": "npm --workspace server run build && npm --workspace server run vercel:postbuild"
     }
   },
   "rewrites": [

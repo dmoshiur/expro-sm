@@ -11,6 +11,8 @@
 import { Router } from 'express';
 import { prisma } from '../config/prisma';
 import { asyncHandler } from '../utils/asyncHandler';
+import { findMissingDatabaseTables } from '../utils/database-readiness';
+import { logger } from '../utils/logger';
 import { authRouter } from './auth.routes';
 import { adminRouter } from './admin.routes';
 import { investorRouter } from './investor.routes';
@@ -39,15 +41,33 @@ apiRouter.use('/dashboard', dashboardRouter);
 apiRouter.use('/reports', reportRouter);
 apiRouter.use('/settings', settingsRouter);
 
-/** Liveness + database readiness probe. */
+/** Database and schema readiness probe. `/health` at the app root is liveness-only. */
 apiRouter.get(
   '/health',
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const started = Date.now();
-    await prisma.$queryRaw`SELECT 1`;
+    const tables = await prisma.$queryRaw<Array<{ name: string }>>`
+      SELECT "name" FROM "sqlite_master" WHERE "type" = 'table'
+    `;
+    const missingTables = findMissingDatabaseTables(tables.map((table) => table.name));
+
+    if (missingTables.length > 0) {
+      logger.error({ requestId: req.id, missingTables }, 'database schema is incomplete');
+      res.status(503).json({
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'The database schema is not initialized. Apply pending migrations before serving API requests.',
+          details: { missingTables },
+          requestId: String(req.id ?? 'unknown'),
+        },
+      });
+      return;
+    }
+
     res.json({
       status: 'ok',
       database: 'up',
+      schema: 'ready',
       latencyMs: Date.now() - started,
       time: new Date().toISOString(),
     });

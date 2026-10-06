@@ -359,6 +359,9 @@ credentials for Preview when enabling Preview deployments):
 NODE_ENV=production
 TURSO_DATABASE_URL=libsql://<database>-<organization>.turso.io
 TURSO_AUTH_TOKEN=<Turso database token>
+# Optional but recommended before the first Production deployment:
+SEED_SUPER_ADMIN_EMAIL=<admin login email>
+SEED_SUPER_ADMIN_PASSWORD=<strong initial password>
 STORAGE_DRIVER=cloudinary
 CLOUDINARY_CLOUD_NAME=<cloud name>
 CLOUDINARY_API_KEY=<api key>
@@ -384,10 +387,18 @@ SMS_SENDER_ID=<approved sender ID>
 # RUN_JOBS is not needed here: jobs are always off on Vercel
 ```
 
-Vercel injects environment variables at runtime; it does not need a `.env` file or the `dotenv`
-package. Apply database migrations from CI or a trusted local machine with the same Turso URL/token
-before sending traffic (`npm --workspace server run db:migrate`). The Vercel build only generates the
-Prisma client and compiles the server; it never applies schema changes to production automatically.
+Vercel injects environment variables at build and runtime; no `.env` file or `dotenv` package is
+needed in the deployment. After compiling the server, the Vercel Production build automatically
+applies pending Turso migrations and runs the idempotent seed for the first super admin/default
+settings. Preview and local builds skip all production database writes. If a migration or seed fails,
+the Production build fails instead of deploying an API against an incomplete database.
+
+Set `SEED_SUPER_ADMIN_EMAIL` and `SEED_SUPER_ADMIN_PASSWORD` in Vercel's Production environment
+before the first deployment to choose the initial login. If the password is omitted, the seed generates
+a cryptographically random one and prints it once in the server service's Vercel build logs; the default
+email is `admin@investorportal.local`. Treat that log as a secret and change the password immediately
+after login. Later deployments do not reset an existing admin password. Demo data is blocked on Vercel
+Production.
 
 Check the environment before deploying it, with the exact rules the server enforces at boot:
 
@@ -398,8 +409,9 @@ npm --workspace server run env:check -- --env-file .env.production
 # `--self-hosted` checks a VPS/container deployment instead of Vercel production; `--json` is for CI.
 ```
 
-A 503 from a deployed API carries the same list in `error.details.problems` (`curl -s https://<app>/api/health`
-shows it too), so the dashboard logs are not the only way to find out what is missing.
+A configuration-related 503 from a deployed API carries the same list in `error.details.problems`, so the dashboard logs are not the only way to find out what is missing. `GET /api/health` also checks database/schema readiness (including the required application tables); it returns 503 with `error.details.missingTables` if migrations have not been applied. The root `/health` endpoint is liveness-only.
+
+If runtime logs contain `no such table: main.admins`, check the latest Vercel **server build** for `[migrations] applied` and the one-time first-admin credentials. The Production postbuild now migrates and seeds automatically; a failed migration/seed fails that build. If the production build reports missing `TURSO_DATABASE_URL` or `TURSO_AUTH_TOKEN`, correct those Production environment values in the Vercel project settings and redeploy. Never use `db:reset` on production.
 
 Do not run the Node cron scheduler in a Vercel function: jobs are automatically disabled there
 (`config.runJobs` is false on Vercel) and no `RUN_JOBS` value is needed. Run exactly one long-lived
@@ -539,7 +551,7 @@ itself is a valid snapshot (`VACUUM INTO` is the fastest way to copy it while th
 | Settings (link TTL, reminder lead time, branding) | **Done** | super admin, falls back to env |
 | RBAC matrix documented + tested on every route | **Done** | `docs/permissions.md`, route-inventory test |
 | Postman / OpenAPI | **Done** | `docs/openapi.yaml`, `docs/postman_collection.json` |
-| Automated tests | **Done** | 150 server tests (21 files) + 13 client component tests (3 files) |
+| Automated tests | **Done** | 182 server tests (27 files) + 13 client component tests (3 files) |
 | Deployment docs (Nginx, PM2, TLS, backup/restore) | **Done** | this README + `deploy/` |
 | pg-boss scheduler | **Partial** | interface in place and swappable; node-cron used by default |
 | Nagad / card gateways | **Not done** | adapter interface exists; only bKash implemented (out of scope for v1) |
@@ -554,5 +566,6 @@ itself is a valid snapshot (`VACUUM INTO` is the fastest way to copy it while th
 | 403 on API calls from the browser | the origin is not in `CORS_ORIGINS` (include scheme + port) |
 | SMS never arrives | `SMS_PROVIDER=console` prints to the API log and keeps an in-memory outbox; configure a real provider for delivery |
 | Payment stays PENDING | check `pm2 logs` for gateway errors, then run the reconciliation job (`POST` a manual settle is not possible by design) |
+| `no such table: main.admins` / login reports a database schema error | the Production server build now applies migrations and seeds the first admin; check its Vercel build logs for a migration or credential error, fix Production env settings if needed, then redeploy; do not use `db:reset` on production |
 | `db:migrate` cannot reach the database | check `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`; for a remote database the token must have write access (`turso db tokens create <db>`) |
 | Locked out | another super admin unlocks you, or `npm --workspace server run seed` recreates the first admin on an empty database |

@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "tsx watch server.ts",
     "build": "npm run prisma:generate && tsc -p tsconfig.json",
+    "vercel:postbuild": "node scripts/vercel-production-deploy.mjs",
     "start": "node dist/server.js",
     "typecheck": "npm run prisma:generate && tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.ts\" \"server.ts\" \"tests/**/*.ts\"",

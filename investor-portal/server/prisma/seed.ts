@@ -18,6 +18,7 @@ import { prisma, disconnectPrisma } from '../src/config/prisma';
 import { splitIntoInstallments, formatBdt } from '../src/utils/money';
 import { addDhakaDays, startOfDhakaDay } from '../src/utils/dates';
 import { encrypt, hmac, randomToken, sha256 } from '../src/utils/encryption';
+import { emailSchema, passwordSchema } from '../src/validators/auth.validator';
 import { logger } from '../src/utils/logger';
 
 const ARGON_OPTIONS = { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const;
@@ -28,15 +29,39 @@ function generatePassword(): string {
 }
 
 async function seedSuperAdmin(): Promise<void> {
-  const email = (process.env.SEED_SUPER_ADMIN_EMAIL ?? 'admin@investorportal.local').toLowerCase();
-  const name = process.env.SEED_SUPER_ADMIN_NAME ?? 'Super Admin';
-  const generated = !process.env.SEED_SUPER_ADMIN_PASSWORD;
-  const password = process.env.SEED_SUPER_ADMIN_PASSWORD ?? generatePassword();
+  const requestedEmail = process.env.SEED_SUPER_ADMIN_EMAIL?.trim() || 'admin@investorportal.local';
+  const emailResult = emailSchema.safeParse(requestedEmail);
+  if (!emailResult.success) throw new Error('[seed] SEED_SUPER_ADMIN_EMAIL must be a valid email address');
+  const email = emailResult.data;
+  const name = process.env.SEED_SUPER_ADMIN_NAME?.trim() || 'Super Admin';
 
   const existing = await prisma.admin.findUnique({ where: { email } });
   if (existing) {
+    if (existing.role !== 'SUPER_ADMIN') {
+      throw new Error('[seed] SEED_SUPER_ADMIN_EMAIL belongs to a non-super-admin account; choose another email');
+    }
     logger.info({ email }, 'super admin already exists - password left unchanged');
     return;
+  }
+
+  // Bootstrap only an empty admin table. A changed SEED_SUPER_ADMIN_EMAIL must
+  // never silently create an extra privileged account on a later deployment.
+  const existingSuperAdmin = await prisma.admin.findFirst({
+    where: { role: 'SUPER_ADMIN' },
+    select: { id: true },
+  });
+  if (existingSuperAdmin) {
+    logger.info({ adminId: existingSuperAdmin.id }, 'a super admin already exists - bootstrap account left unchanged');
+    return;
+  }
+
+  const configuredPassword = process.env.SEED_SUPER_ADMIN_PASSWORD;
+  const generated = !configuredPassword?.trim();
+  const password = generated ? generatePassword() : configuredPassword!;
+  if (!passwordSchema.safeParse(password).success) {
+    throw new Error(
+      '[seed] SEED_SUPER_ADMIN_PASSWORD must be 10-200 characters, include a letter and number, and have no outer spaces',
+    );
   }
 
   await prisma.admin.create({
@@ -148,9 +173,14 @@ async function seedDemoData(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const seedDemo = process.env.SEED_DEMO === '1' || process.argv.includes('--demo');
+  if (seedDemo && process.env.VERCEL_ENV === 'production') {
+    throw new Error('[seed] demo records are disabled on Vercel production');
+  }
+
   await seedSuperAdmin();
   await seedSettings();
-  if (process.env.SEED_DEMO === '1' || process.argv.includes('--demo')) {
+  if (seedDemo) {
     await seedDemoData();
   }
   logger.info('seed complete');

@@ -10,6 +10,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { Prisma } from '../generated/prisma/client';
 import { ZodError } from 'zod';
 import { AppError } from '../utils/errors';
+import { isDatabaseSchemaError } from '../utils/database-errors';
 import { logger } from '../utils/logger';
 
 interface ErrorBody {
@@ -37,6 +38,12 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     code = err.code;
     message = err.message;
     details = err.details;
+  } else if (isDatabaseSchemaError(err)) {
+    // A missing table/column is a deployment migration problem, never a client
+    // error. In particular, don't turn Prisma P2021 into HTTP 400 below.
+    status = 503;
+    code = 'SERVICE_UNAVAILABLE';
+    message = 'The database schema is not initialized. Apply pending migrations before using the API.';
   } else if (err instanceof ZodError) {
     status = 400;
     code = 'VALIDATION_ERROR';
