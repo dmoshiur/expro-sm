@@ -12,6 +12,7 @@
   },
   "scripts": {
     "postinstall": "npm --workspace server run prisma:generate --if-present || echo \"[postinstall] prisma client generation skipped - run: npm --workspace server run prisma:generate\"",
+    "setup": "node scripts/setup-local.mjs",
     "dev": "concurrently -k -n server,client -c blue,green \"npm --workspace server run dev\" \"npm --workspace client run dev\"",
     "dev:server": "npm --workspace server run dev",
     "dev:client": "npm --workspace client run dev",

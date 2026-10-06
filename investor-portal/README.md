@@ -70,6 +70,30 @@ investor-portal/
 git clone <repo> && cd investor-portal
 npm install                      # installs workspaces; prisma client generation is non-fatal here
 
+npm run setup                      # writes server/.env + client/.env with generated secrets,
+                                   # migrates the local SQLite file and seeds the first admin.
+                                   # No external account is required - it prints the login.
+
+npm run dev                        # API on :4000, SPA on :5173 (Vite proxies /api)
+```
+
+`npm run setup` is idempotent: running it again never overwrites an existing
+`server/.env` (pass `--force` to regenerate, `--skip-db` to only write the env
+files, `--password '<value>'` to choose the first admin password — use
+`--password 'Admin@12345'` to match the password used throughout the docs and the
+Postman collection).
+
+**Zero external services in development.** Without any credentials the API uses
+the console SMS provider, local disk storage and a mock bKash gateway, so the
+whole portal (including the public `/pay/:token` flow) is usable offline. Add
+real values to `server/.env` to switch each one on — see the table below. Hosted
+deployments never accept those fallbacks: `npm --workspace server run env:check`
+lists exactly what a production environment is missing.
+
+<details>
+<summary>Doing it by hand instead</summary>
+
+```bash
 cp server/.env.example server/.env         # TURSO_DATABASE_URL=file:./prisma/dev.db by default
 cp client/.env.example client/.env
 # optional: set SEED_SUPER_ADMIN_PASSWORD=Admin@12345 in server/.env to match the
@@ -77,9 +101,9 @@ cp client/.env.example client/.env
 
 npm --workspace server run db:migrate      # applies prisma/migrations to the local libSQL file
 npm --workspace server run seed            # creates the first SUPER_ADMIN + default settings
-
-npm run dev                                # API on :4000, SPA on :5173 (Vite proxies /api)
 ```
+
+</details>
 
 The seed prints the initial super-admin credentials exactly once:
 

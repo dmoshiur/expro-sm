@@ -22,6 +22,7 @@ import {
   type ConfigProblem,
 } from './production';
 import { deploymentOrigin, deploymentOrigins, resolveHostedOrigins, resolveHostedUrl } from './deployment-urls';
+import type { ResolvedOrigins } from './deployment-urls';
 
 // Production providers inject environment variables directly. This helper only
 // reads a local .env for non-Vercel development/self-hosted processes.
@@ -196,7 +197,13 @@ const bkashCallbackUrl = resolveHostedUrl(
   env.BKASH_CALLBACK_URL,
   ownOrigin ? `${ownOrigin}/api/public/payments/bkash/callback` : undefined,
 );
-const corsOrigins = resolveHostedOrigins(env.CORS_ORIGINS, ownOrigins);
+// Loopback origins are only rewritten on a hosted deployment. A local dev
+// process keeps `http://localhost:5173` as-is (that IS the browser origin there)
+// and stays quiet: the "no hosted browser can use it" note below is only
+// meaningful when the runtime actually told us its own public origin.
+const corsOrigins: ResolvedOrigins = isVercelDeployment
+  ? resolveHostedOrigins(env.CORS_ORIGINS, ownOrigins)
+  : { origins: [...env.CORS_ORIGINS], notes: [] };
 const urlResolutionNotes = [
   appBaseUrl.note,
   apiBaseUrl.note,
