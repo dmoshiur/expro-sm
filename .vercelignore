@@ -14,8 +14,8 @@ local-storage/
 backups/
 *.log
 
-# Docs & deploy helpers (server/scripts is NOT ignored: the build runs
-# `npm run prisma:generate`, which uses scripts/prisma.mjs)
+# Docs & deploy helpers (server/scripts is NOT ignored: Vercel runs Prisma
+# generation plus the production-only migration/bootstrap postbuild hook)
 investor-portal/docs/
 investor-portal/deploy/
 investor-portal/README.md

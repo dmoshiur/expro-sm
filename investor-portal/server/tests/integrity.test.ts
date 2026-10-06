@@ -37,7 +37,8 @@ describe('database invariants', () => {
       .expect(201);
 
     expect(await findInvariantViolations(execute)).toEqual([]);
-    await client.get('/api/health').expect(200);
+    const health = await client.get('/api/health').expect(200);
+    expect(health.body).toMatchObject({ database: 'up', schema: 'ready' });
   });
 
   it('detects installments that drift from the investment total', async () => {
