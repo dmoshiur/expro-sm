@@ -1,56 +1,11 @@
-# deps
 node_modules/
-.pnp/
-.pnp.js
-
-# builds
 dist/
-build/
-# Prisma 7 generates the client into the source tree (src/generated/prisma);
-# it is recreated by `npm install` / `npm run build` (prisma:generate)
-server/src/generated/
-client/dist/
-server/dist/
-*.tsbuildinfo
-.vite/
-coverage/
-
-# env / secrets - NEVER commit
 .env
 .env.*
 !.env.example
-*.pem
-*.key
-
-# logs / runtime
-logs/
 *.log
-npm-debug.log*
-pids/
-*.pid
-*.seed
-.tmp/
-tmp/
+coverage/
+.pgdata/
 local-storage/
-
-# editors / OS
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/*
-!.vscode/extensions.json
-
-# test output
-test-results/
-*.lcov
-
-# local libSQL/SQLite databases (Turso data lives remotely; these are dev files)
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-prisma/test.db
-prisma/dev.db
-prisma/replica.db
-server/backups/
 backups/
+.DS_Store

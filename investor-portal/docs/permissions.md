@@ -1,96 +1,144 @@
-# Permissions
+# Permissions matrix
 
-Three roles. The matrix is implemented in `server/src/utils/permissions.ts` and enforced by the
-`requirePermission()` middleware on every route; `server/tests/rbac.routes.test.ts` walks the whole
-route inventory to prove it.
+Every endpoint below requires an authenticated admin session **and** passes
+through `apiLimiter`. State-changing requests from a browser must be
+same-origin (CSRF guard in `server/src/middleware/security.js`).
 
-| Capability | SUPER_ADMIN | ACCOUNTANT | VIEWER |
-| --- | :--: | :--: | :--: |
-| Dashboard & reports (read) | ✅ | ✅ | ✅ |
-| Export Excel/PDF | ✅ | ✅ | ❌ |
-| Investors — read | ✅ | ✅ | ✅ (masked) |
-| Investors — create / update | ✅ | ✅ | ❌ |
-| Investors — deactivate / reactivate | ✅ | ❌ | ❌ |
-| Nominees — read | ✅ | ✅ (masked) | ✅ (masked) |
-| Nominees — create / update / delete | ✅ | ❌ | ❌ |
-| NID value + NID scan (view/download) | ✅ | ❌ | ❌ |
-| Full mobile number | ✅ | ❌ (masked) | ❌ (masked) |
-| Investments — read | ✅ | ✅ | ✅ |
-| Investments — create / edit / cancel | ✅ | ✅ | ❌ |
-| Installments — edit schedule | ✅ | ✅ | ❌ |
-| Installments — waive / cancel / reopen | ✅ | ✅ | ❌ |
-| Payment links — generate / send / regenerate | ✅ | ✅ | ❌ |
-| Manual payments (cash / bank / other) | ✅ | ✅ | ❌ |
-| Payments — read, receipts | ✅ | ✅ | ✅ |
-| Admissions — SMS log | ✅ | ✅ | ✅ (masked destination) |
-| Audit log | ✅ | ❌ | ❌ |
-| Admin management | ✅ | ❌ | ❌ |
-| Settings | ✅ | ❌ | ❌ |
+Roles (`admins.role`) — `ROLE_RANK` in `server/src/services/auth.service.js`:
 
-Legend: ✅ allowed · ❌ denied (403).
+| Role | Rank | Intent |
+| --- | --- | --- |
+| `SUPER_ADMIN` | 3 | Everything, including staff accounts, audit trail, nominee edits and NID documents. |
+| `ACCOUNTANT` | 2 | Day-to-day bookkeeping: investors, investments, installments, manual payments, links, reports. |
+| `VIEWER` | 1 | Read-only dashboards/lists. All personal data is masked. |
 
-## Permission keys
+## Enforcement points
 
-| Key | Meaning |
+* `requireAuth` — any valid session (all `/api/*` except `/api/health`, `/api/auth/login`, `/api/auth/logout`, `/api/public/*`).
+* `requireRole('SUPER_ADMIN','ACCOUNTANT')` — writes.
+* `requireSuperAdmin` — staff, audit, jobs, NID documents, test SMS.
+* Service layer also masks PII for `VIEWER` (`presentInvestor`, `presentNominees`),
+  so masking does not depend on the controller.
+
+## Endpoint matrix
+
+### Public (no session — token + rate limits only)
+
+| Method & path | Notes |
 | --- | --- |
-| `admin:manage` | create/update admins, reset password or 2FA, unlock |
-| `audit:read` | read the audit log |
-| `settings:write` | read/update runtime settings |
-| `investor:read` / `investor:write` | investor list and profile changes |
-| `investor:nominee:write` | create/update/delete nominees |
-| `investor:sensitive:read` | NID value, NID scan URL, unmasked mobile |
-| `investment:read` / `investment:write` | investments and their schedule |
-| `installment:write` | edit installments before payment |
-| `installment:waive` | waive / cancel / reopen |
-| `payment:read` / `payment:manual` | payment list, detail, receipts / manual entries |
-| `paymentlink:send` / `paymentlink:regenerate` | SMS a link / mint a new one |
-| `report:read` / `report:export` | reports / Excel + PDF exports |
+| `GET /api/public/pay/:token` | Minimal projection: first name, installment no., amount, due date, masked mobile, status. Generic 404 / 410 on invalid or expired links. |
+| `POST /api/public/pay/:token/start` | Creates (or reuses, inside a 60s window) a gateway payment. `payStartLimiter` (default 10/min/IP). |
+| `POST /api/public/pay/:token/verify` | Re-queries the gateway; the browser is never trusted. |
+| `GET /pay/callback` | Gateway redirect target. Ignores every status query param. |
+| `GET /pay/result` | Plain HTML fallback when the SPA is unavailable. |
 
-## Route → permission map
+### Authentication
 
-| Method & path | Permission |
-| --- | --- |
-| `POST /api/auth/login` | public (rate limited: 10 / 15 min / IP + account lockout) |
-| `POST /api/auth/refresh` | refresh cookie |
-| `POST /api/auth/logout` | optional auth |
-| `GET /api/auth/me` | authenticated |
-| `POST /api/auth/change-password` | authenticated (revokes all sessions) |
-| `POST /api/auth/2fa/setup`, `/2fa/verify`, `/2fa/disable` | authenticated |
-| `GET /api/admins`, `POST /api/admins`, `PATCH /api/admins/:id`, `POST /api/admins/:id/reset-password`, `/reset-2fa`, `/unlock` | `admin:manage` |
-| `GET /api/investors`, `GET /api/investors/:id` | `investor:read` |
-| `POST /api/investors`, `PATCH /api/investors/:id` | `investor:write` |
-| `POST /api/investors/:id/deactivate`, `/reactivate` | `investor:write` + SUPER_ADMIN |
-| `PUT /api/investors/:id/nominees` | `investor:nominee:write` (SUPER_ADMIN only) |
-| `POST /api/investors/:id/photo`, `/nid-scan` | `investor:write` (NID scan: SUPER_ADMIN) |
-| `GET /api/investors/:id/nid-scan-url` | `investor:sensitive:read` (SUPER_ADMIN only) |
-| `GET /api/investments`, `GET /api/investments/:id`, `GET /api/installments` | `investment:read` |
-| `POST /api/investments`, `PATCH /api/investments/:id` | `investment:write` |
-| `POST /api/investments/:id/cancel`, `PUT /api/investments/:id/installments` | `installment:write` |
-| `POST /api/installments/:id/waive`, `/cancel`, `/reopen` | `installment:waive` |
-| `POST /api/payments/installments/:id/link/regenerate` | `paymentlink:regenerate` |
-| `POST /api/payments/installments/:id/link/send`, `POST /api/payments/investments/:id/links/send` | `paymentlink:send` |
-| `GET /api/payments`, `GET /api/payments/:id`, `GET /api/payments/:id/receipt.pdf` | `payment:read` |
-| `POST /api/payments/installments/:id/manual` | `payment:manual` |
-| `GET /api/payments/sms-logs` | `payment:read` |
-| `GET /api/dashboard` | `report:read` |
-| `GET /api/reports/due`, `/collections`, `/investors/:id/statement` | `report:read` |
-| `GET /api/reports/*.xlsx`, `/investors/:id/statement.pdf` | `report:export` |
-| `GET /api/audit-logs`, `/actions` | `audit:read` (SUPER_ADMIN only) |
-| `GET /api/settings`, `PUT /api/settings` | `settings:write` (SUPER_ADMIN only) |
-| `GET /api/public/*`, `POST /api/public/payments/:token/start` | public (rate limited, no session) |
-| `GET /api/files/local/*` | authenticated (local storage driver only) |
+| Endpoint | SUPER_ADMIN | ACCOUNTANT | VIEWER |
+| --- | --- | --- | --- |
+| `POST /api/auth/login` (rate-limited, lockout) | ✅ | ✅ | ✅ |
+| `POST /api/auth/logout`, `POST /api/auth/refresh` | ✅ | ✅ | ✅ |
+| `GET /api/auth/me` | ✅ | ✅ | ✅ |
+| `POST /api/auth/2fa/*`, `POST /api/auth/totp/*` (own account) | ✅ | ✅ | ✅ |
+| `POST /api/auth/change-password` (own account) | ✅ | ✅ | ✅ |
+| `GET /api/auth/sessions`, `POST /api/auth/sessions/revoke-others` | ✅ | ✅ | ✅ |
 
-## Field-level rules for VIEWER and ACCOUNTANT
+### Staff accounts (`/api/admins`)
 
-* Mobile numbers are returned masked (`01712****78`) and the audit log records the *masked* value.
-* NID values are never decrypted for these roles; the API returns `null` (or a masked NID when one is
-  stored) and `hasNid` / `hasNidScan` booleans so the UI can still show the right state.
-* Exports are blocked entirely for VIEWER because a spreadsheet cannot be masked after download.
+| Endpoint | SUPER_ADMIN | ACCOUNTANT | VIEWER |
+| --- | --- | --- | --- |
+| `GET /api/admins` | ✅ | ❌ 403 | ❌ 403 |
+| `POST /api/admins` | ✅ | ❌ | ❌ |
+| `PATCH /api/admins/:id` (role, active, name) | ✅ | ❌ | ❌ |
+| `POST /api/admins/:id/reset-password` | ✅ | ❌ | ❌ |
+| `POST /api/admins/:id/reset-totp` | ✅ | ❌ | ❌ |
+| `POST /api/admins/:id/revoke-sessions` | ✅ | ❌ | ❌ |
 
-## Escalation & auditing
+Guards: at least one active `SUPER_ADMIN` must remain, an admin cannot disable
+itself, a role change revokes that admin's sessions, and an active→disabled
+transition revokes every session immediately.
 
-* Every write action records actor, IP, user agent, old value and new value in `audit_logs`, which
-  the database blocks from being updated or deleted.
-* Rising a role is itself audited (`admin.role_changed`), as are 2FA resets, password resets,
-  lockouts and unlocks.
-* A VIEWER cannot elevate: no admin-management route is reachable without `admin:manage`.
+### Investors
+
+| Endpoint | SUPER_ADMIN | ACCOUNTANT | VIEWER |
+| --- | --- | --- | --- |
+| `GET /api/investors`, `GET /api/investors/:id` | ✅ | ✅ | ✅ (masked) |
+| `GET /api/investors/:id/photo` | ✅ | ✅ | ✅ |
+| `GET /api/investors/export.csv` | ✅ | ✅ | ✅ (masked) |
+| `POST /api/investors`, `PATCH /api/investors/:id` | ✅ | ✅ | ❌ |
+| `POST /api/investors/:id/status` (ACTIVE/INACTIVE/CLOSED) | ✅ | ✅ | ❌ |
+| `DELETE /api/investors/:id` (soft delete), `POST /api/investors/:id/restore` | ✅ | ✅ | ❌ |
+| `POST /api/investors/:id/photo` | ✅ | ✅ | ❌ |
+| `POST /api/investors/:id/nominees`, `PATCH/DELETE …/nominees/:nomineeId` | ✅ | ❌ 403 | ❌ 403 |
+| `POST /api/investors/:id/nid` (set/replace NID) | ✅ | ❌ | ❌ |
+| `GET /api/investors/:id/nid` (reveal), `GET …/nominees/:id/nid` | ✅ | ❌ | ❌ |
+| `GET /api/investors/:id/nid-scan`, `POST /api/investors/:id/nid-scan` | ✅ | ❌ | ❌ |
+
+Every NID reveal and NID-scan read is written to the audit log. A `VIEWER`
+receives `mobile`/`email` masked, `address: '***'`, `nid_last4` masked and never
+the ciphertext columns.
+
+### Investments & installments
+
+| Endpoint | SUPER_ADMIN | ACCOUNTANT | VIEWER |
+| --- | --- | --- | --- |
+| `GET /api/investments*`, `GET /api/installments*` | ✅ | ✅ | ✅ |
+| `GET /api/reports/*` (due, overdue, collections, statements, CSV/HTML) | ✅ | ✅ | ✅ |
+| `POST /api/investments`, `PATCH …/total`, `POST …/status` | ✅ | ✅ | ❌ |
+| `PATCH /api/installments/:id` (amount, due date) | ✅ | ✅ | ❌ |
+| `POST /api/installments/:id/state` (WAIVE/CANCEL/REINSTATE, reason required) | ✅ | ✅ | ❌ |
+| `POST /api/installments/:id/pay-link` (issue/regenerate) | ✅ | ✅ | ❌ |
+| `POST /api/installments/:id/send-link`, `POST /api/installments/bulk/send-links` (≤50, 3/min) | ✅ | ✅ | ❌ |
+
+### Payments
+
+| Endpoint | SUPER_ADMIN | ACCOUNTANT | VIEWER |
+| --- | --- | --- | --- |
+| `GET /api/payments`, `GET /api/payments/:id`, `GET /api/payments/provider` | ✅ | ✅ | ✅ |
+| `GET /api/payments/:id/receipt`, `…/receipt.json`, `GET /api/payments/export.csv` | ✅ | ✅ | ✅ |
+| `POST /api/payments/manual` (reference + note required) | ✅ | ✅ | ❌ |
+| `POST /api/payments/:id/refresh` | ✅ | ✅ | ❌ |
+| `POST /api/payments/:id/cancel` | ✅ | ✅ | ❌ |
+| `POST /api/payments/webhook` | disabled unless `PAYMENTS_WEBHOOK_ENABLED=true` + secret header | | |
+
+Cancelling: an open/failed attempt is simply closed. A **manual** SUCCESS
+payment is voided and the installment's `amount_paid` is reversed (audited with
+the reversal). A settled **bKash** payment cannot be voided here — refund it in
+bKash and record the adjustment manually.
+
+### Audit, jobs, SMS
+
+| Endpoint | SUPER_ADMIN | ACCOUNTANT | VIEWER |
+| --- | --- | --- | --- |
+| `GET /api/audit`, `GET /api/audit/filters` | ✅ | ❌ 403 | ❌ 403 |
+| `GET /api/jobs`, `POST /api/jobs/:name/run` | ✅ | ❌ | ❌ |
+| `GET /api/sms`, `GET /api/sms/provider` | ✅ | ✅ | ✅ |
+| `POST /api/sms/test` (rate-limited 5/min) | ✅ | ❌ 403 | ❌ 403 |
+
+### Health
+
+`GET /api/health` is unauthenticated: process status, DB round-trip, migration
+count, scheduler state. No secrets, no PII.
+
+## Audit coverage
+
+Written by the service layer with `old_value` / `new_value` (secrets redacted):
+
+`LOGIN_SUCCESS`, `LOGIN_FAILED`, `LOGIN_LOCKED`, `LOGOUT`, `SESSION_REFRESHED`,
+`SESSION_REVOKED`, `PASSWORD_CHANGED`, `PASSWORD_RESET`, `TOTP_SETUP_STARTED`,
+`TOTP_ENABLED`, `TOTP_DISABLED`, `TOTP_VERIFY_FAILED`, `ADMIN_CREATED`,
+`ADMIN_UPDATED`, `ADMIN_ROLE_CHANGED`, `ADMIN_DISABLED`, `ADMIN_ENABLED`,
+`INVESTOR_CREATED`, `INVESTOR_UPDATED`, `INVESTOR_DEACTIVATED`,
+`INVESTOR_RESTORED`, `INVESTOR_DELETED`, `INVESTOR_PHOTO_UPDATED`,
+`INVESTOR_NID_UPDATED`, `INVESTOR_NID_VIEWED`, `NOMINEES_REPLACED`,
+`NOMINEE_UPDATED`, `INVESTMENT_CREATED`, `INVESTMENT_UPDATED`,
+`INVESTMENT_TOTAL_CHANGED`, `INVESTMENT_STATUS_CHANGED`, `INSTALLMENT_UPDATED`,
+`INSTALLMENT_WAIVED`, `INSTALLMENT_CANCELLED`, `INSTALLMENT_REINSTATED`,
+`INSTALLMENT_OVERDUE_MARKED`, `PAY_LINK_GENERATED`, `PAY_LINK_REGENERATED`,
+`PAY_LINK_ACCESSED`, `PAY_LINK_INVALID`, `PAYMENT_INITIATED`,
+`PAYMENT_VERIFIED`, `PAYMENT_FAILED`, `PAYMENT_CANCELLED`,
+`PAYMENT_MANUAL_RECORDED`, `RECEIPT_VIEWED`, `SMS_SENT`, `SMS_FAILED`,
+`REMINDER_SENT`, `JOB_RUN`, `REPORT_EXPORTED`, `UNAUTHORIZED_ATTEMPT`.
+
+`audit_logs` is append-only at the database level (UPDATE/DELETE/TRUNCATE raise
+an exception), so no application role can rewrite history.

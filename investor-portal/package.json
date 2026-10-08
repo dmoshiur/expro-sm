@@ -2,36 +2,34 @@
   "name": "investor-portal",
   "version": "1.0.0",
   "private": true,
-  "description": "Investor Installment Portal - admin-only investment & installment collection system (bKash tokenized checkout, SaaS-grade security)",
+  "description": "Investor Installment Portal - admin-only installment collection with bKash payment links, SMS reminders and audit trail. Single Node process serves the API and the built React app.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.9.0"
+  },
   "workspaces": [
     "server",
     "client"
   ],
-  "engines": {
-    "node": ">=20.12.0"
-  },
   "scripts": {
-    "postinstall": "npm --workspace server run prisma:generate --if-present || echo \"[postinstall] prisma client generation skipped - run: npm --workspace server run prisma:generate\"",
-    "setup": "node scripts/setup-local.mjs",
-    "dev": "concurrently -k -n server,client -c blue,green \"npm --workspace server run dev\" \"npm --workspace client run dev\"",
-    "dev:server": "npm --workspace server run dev",
-    "dev:client": "npm --workspace client run dev",
-    "build": "npm --workspace server run build && npm --workspace client run build",
-    "test": "npm --workspace server run test && npm --workspace client run test",
-    "lint": "npm --workspace server run lint && npm --workspace client run lint",
-    "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck",
-    "env:check": "npm --workspace server run env:check --",
-    "db:migrate": "npm --workspace server run db:migrate",
-    "migrate:deploy": "npm --workspace server run migrate:deploy",
-    "migrate:status": "npm --workspace server run migrate:status",
-    "db:check": "npm --workspace server run db:check",
-    "db:backup": "npm --workspace server run db:backup",
-    "seed": "npm --workspace server run seed",
-    "seed:demo": "npm --workspace server run seed:demo",
-    "db:reset": "npm --workspace server run db:reset",
-    "test:client": "npm --workspace client run test"
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build --workspace client",
+    "start": "node --env-file=.env server/server.js",
+    "migrate": "node --env-file=.env server/src/db/migrate.js",
+    "seed": "node --env-file=.env server/src/db/seed.js",
+    "test": "node --env-file=.env --test --test-concurrency=1 \"server/tests/*.test.js\"",
+    "test:unit": "node --env-file=.env --test --test-concurrency=1 \"server/tests/unit.*.test.js\"",
+    "check": "node scripts/check-env.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "vite": "^5.4.11"
   }
 }
