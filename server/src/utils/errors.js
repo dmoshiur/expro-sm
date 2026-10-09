@@ -26,16 +26,29 @@ export function isAppError(err) {
   return err instanceof AppError || (err && typeof err.status === 'number' && typeof err.code === 'string');
 }
 
-/** Convert a Postgres error into a client-safe AppError. */
-export function fromPgError(err) {
-  if (!err || typeof err !== 'object') return new AppError(500, 'INTERNAL', 'Internal server error');
-  if (err.code === '23505' || err.code === '23505' /* unique_violation */) {
-    return conflict('A record with these details already exists', { constraint: err.constraint });
+/**
+ * Convert a database error (DbError from db/errors.js) into a client-safe AppError.
+ * Returns null for anything that is not a database error. Messages come from our own
+ * constraint names or RAISE() texts only - never SQL text or connection details.
+ */
+export function fromDbError(err) {
+  if (!err || typeof err !== 'object' || err.name !== 'DbError') return null;
+  switch (err.code) {
+    case 'UNIQUE_VIOLATION':
+      return conflict('A record with these details already exists', { constraint: err.constraint ?? undefined });
+    case 'FOREIGN_KEY_VIOLATION':
+      return badRequest('Referenced record does not exist');
+    case 'NOT_NULL_VIOLATION':
+      return badRequest('A required field is missing');
+    case 'CHECK_VIOLATION':
+      return badRequest('Value violates a data constraint');
+    case 'RAISED':
+      return badRequest(err.message || 'Operation rejected by a database rule');
+    case 'DB_BUSY':
+      return serviceUnavailable('Database is busy, please retry');
+    case 'DB_UNAVAILABLE':
+      return serviceUnavailable('Database is temporarily unavailable');
+    default:
+      return new AppError(500, 'INTERNAL', 'Internal server error');
   }
-  if (err.code === '23503') return badRequest('Referenced record does not exist', { constraint: err.constraint });
-  if (err.code === '23514') return badRequest('Value violates a data constraint', { constraint: err.constraint });
-  if (err.code === '23502') return badRequest('A required field is missing', { column: err.column });
-  if (err.code === '22001') return badRequest('Value is too long');
-  if (err.code === 'P0001') return badRequest(err.message || 'Operation rejected by a database rule');
-  return new AppError(500, 'INTERNAL', 'Internal server error');
 }

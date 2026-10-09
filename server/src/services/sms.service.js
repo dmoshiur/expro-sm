@@ -4,7 +4,8 @@
  * Every message is written to sms_logs with a MASKED mobile number and a short
  * body preview - never the full number, never a payment token.
  */
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
+import { NOW } from '../db/sql.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { maskMobile } from '../utils/mask.js';
@@ -36,7 +37,7 @@ function logToDb(entry) {
   return query(
     `insert into sms_logs (installment_id, investor_id, mobile_masked, message_type, provider,
                            provider_message_id, provider_status, template_key, body_preview, error, sent_by_admin_id)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id`,
+     values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) returning id`,
     [
       entry.installmentId ?? null,
       entry.investorId ?? null,
@@ -157,7 +158,7 @@ export async function sendReminderForInstallment({ installment, kind, daysLeft =
     req,
   });
   if (result.ok) {
-    await query('update installments set last_reminded_at = now(), reminder_count = reminder_count + 1 where id = $1', [
+    await query(`update installments set last_reminded_at = ${NOW}, reminder_count = reminder_count + 1 where id = ?1`, [
       installment.id,
     ]);
   }
@@ -207,7 +208,7 @@ export async function listSmsLogs(filters = {}, client = undefined) {
   const params = [];
   const push = (v) => {
     params.push(v);
-    return `$${params.length}`;
+    return `?${params.length}`;
   };
   if (filters.installmentId) where.push(`s.installment_id = ${push(filters.installmentId)}`);
   if (filters.investorId) where.push(`s.investor_id = ${push(filters.investorId)}`);
@@ -226,7 +227,7 @@ export async function listSmsLogs(filters = {}, client = undefined) {
     params,
     client,
   );
-  const total = await query(`select count(*)::int as count from sms_logs s ${whereSql}`, params.slice(0, params.length - 2), client);
+  const total = await query(`select count(*) as count from sms_logs s ${whereSql}`, params.slice(0, params.length - 2), client);
   return { rows: rows.rows, total: total.rows[0].count, limit, offset };
 }
 

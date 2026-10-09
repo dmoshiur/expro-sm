@@ -2,14 +2,15 @@
  * Test harness.
  *
  * Loads `.env` then `.env.test` (a tiny hand-written parser - no dotenv
- * dependency), points the pool at an isolated test database, resets + migrates
- * the schema, boots the real Express app on an ephemeral port and gives tests a
+ * dependency), points the client at an isolated, disposable test database
+ * (a local file under .tmp/ unless .env.test names a *test* Turso database), resets
+ * + migrates the schema, boots the real Express app on an ephemeral port and gives tests a
  * cookie-aware HTTP client.
  *
  * bKash and SMS are swapped for in-process fakes via adapter injection, so the
  * whole suite runs without any network access.
  */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -35,10 +36,27 @@ function loadEnvFile(file) {
 /** Must run before any src import (config is read at module load). */
 export function prepareEnv() {
   loadEnvFile(join(ROOT, '.env'));
+  // Database settings never come from .env: a developer's .env may point at the real
+  // Turso database. Only an explicit .env.test (or the disposable local default) is used.
+  const dbEnvFromDotEnv = { url: process.env.TURSO_DATABASE_URL, token: process.env.TURSO_AUTH_TOKEN };
+  delete process.env.TURSO_DATABASE_URL;
+  delete process.env.TURSO_AUTH_TOKEN;
   const hadTestEnv = loadEnvFile(join(ROOT, '.env.test'));
   process.env.NODE_ENV = 'test';
   process.env.LOG_LEVEL = process.env.TEST_LOG_LEVEL ?? 'error';
   process.env.IS_TEST = 'true';
+  if (!hadTestEnv) {
+    // Disposable local database. The file name must contain "test" (enforced by config).
+    mkdirSync(join(ROOT, '.tmp'), { recursive: true });
+    process.env.TURSO_DATABASE_URL = `file:${join(ROOT, '.tmp', `test-${process.pid}.db`)}`;
+    delete process.env.TURSO_AUTH_TOKEN;
+  }
+  const url = process.env.TURSO_DATABASE_URL ?? '';
+  if (!/test/i.test(url) || (dbEnvFromDotEnv.url && url === dbEnvFromDotEnv.url)) {
+    throw new Error(
+      'Refusing to run tests: TURSO_DATABASE_URL in .env.test must name a *test* database and must not be the production URL.',
+    );
+  }
   process.env.JOBS_ENABLED = 'false';
   process.env.PAYMENT_PROVIDER = 'mock';
   process.env.SMS_PROVIDER = 'console';
@@ -51,30 +69,23 @@ export function prepareEnv() {
   process.env.RATE_LIMIT_PAY_START_MAX = '100000';
   process.env.SESSION_SECRET = process.env.SESSION_SECRET || randomBytes(48).toString('base64url');
   process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || randomBytes(32).toString('hex');
-  if (!process.env.DATABASE_URL?.includes('test') && !hadTestEnv) {
-    throw new Error(
-      'Refusing to run tests against a non-test database. Set DATABASE_URL to a *_test database in .env.test ' +
-        `(currently: ${process.env.DATABASE_URL ?? 'unset'})`,
-    );
-  }
   return { hadTestEnv };
 }
 
 export async function createTestContext({ reset = true, seed = true } = {}) {
   prepareEnv();
 
-  const { runMigrations, resetDatabase } = await import('../../src/db/migrate.js');
-  const { closePool, query, resetPoolForTests } = await import('../../src/db/pool.js');
+  const { runMigrations } = await import('../../src/db/migrate.js');
+  const { closeDatabase, query, resetDatabaseForTests } = await import('../../src/db/client.js');
   const { createApp } = await import('../../src/app.js');
   const { setGateway, createMockGateway } = await import('../../src/services/gateways/index.js');
   const { setSmsProvider } = await import('../../src/services/sms.service.js');
   const { memoryProvider } = await import('../../src/services/sms/providers.js');
   const { createServer } = await import('node:http');
 
-  resetPoolForTests();
   if (reset) {
     await query('select 1');
-    await resetDatabase();
+    await resetDatabaseForTests();
   }
   await runMigrations();
 
@@ -105,8 +116,8 @@ export async function createTestContext({ reset = true, seed = true } = {}) {
         email: 'root@test.local',
         password: SUPER_ADMIN_PASSWORD,
       });
-      const superAdmin = superResult.admin ?? (await query('select * from admins where email = $1', ['root@test.local'])).rows[0];
-      await query('update admins set must_change_password = false where id = $1', [superAdmin.id]);
+      const superAdmin = superResult.admin ?? (await query('select * from admins where email = ?1', ['root@test.local'])).rows[0];
+      await query('update admins set must_change_password = false where id = ?1', [superAdmin.id]);
       const accountant = await createAdmin(
         { name: 'Test Accountant', email: 'accounts@test.local', password: ACCOUNTANT_PASSWORD, role: 'ACCOUNTANT' },
         { id: superAdmin.id, email: 'root@test.local', role: 'SUPER_ADMIN' },
@@ -136,7 +147,7 @@ export async function createTestContext({ reset = true, seed = true } = {}) {
     },
     async close() {
       await new Promise((resolve) => server.close(resolve));
-      await closePool();
+      closeDatabase();
     },
   };
 

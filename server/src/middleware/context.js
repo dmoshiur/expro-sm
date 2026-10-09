@@ -38,7 +38,7 @@ export function requestContext(req, res, next) {
   next();
 }
 
-/** Postgres `inet` accepts the bare address; strip IPv6-mapped IPv4 prefix. */
+/** Store the bare client address; strip the IPv6-mapped IPv4 prefix so it is canonical. */
 function normalizeIp(ip) {
   const value = String(ip ?? '').trim();
   if (!value) return null;

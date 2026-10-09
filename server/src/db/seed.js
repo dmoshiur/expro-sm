@@ -3,6 +3,8 @@
  *   npm run seed                       -> first Super Admin (+ sample data in dev)
  *   npm run seed -- --no-sample        -> admins only
  *   npm run seed -- --reset-passwords  -> also reset the seeded admin passwords
+ *   npm run seed -- --sample           -> sample data (required in production; dev default)
+ * In production SEED_SUPER_ADMIN_PASSWORD (and the other SEED_*_PASSWORD values) are required.
  *
  * Idempotent: safe to run repeatedly. Passwords come from env when provided:
  *   SEED_SUPER_ADMIN_EMAIL / SEED_SUPER_ADMIN_PASSWORD
@@ -10,7 +12,7 @@
  *   SEED_VIEWER_EMAIL      / SEED_VIEWER_PASSWORD
  */
 import { randomBytes } from 'node:crypto';
-import { query, closePool } from './pool.js';
+import { query, closeDatabase } from './client.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { assertPasswordPolicy, encryptField, hashPassword, last4, nidHash } from '../services/crypto.service.js';
@@ -22,12 +24,17 @@ import { addDays, dhakaDate } from '../utils/dates.js';
 import { formatBDT } from '../utils/money.js';
 
 const args = process.argv.slice(2);
-const withSample = !args.includes('--no-sample');
+// Sample data is for development only. Production seeding needs an explicit --sample.
+const withSample = config.isProd ? args.includes('--sample') : !args.includes('--no-sample');
 const resetPasswords = args.includes('--reset-passwords');
 
 function envPassword(name, fallback) {
   const value = process.env[name];
   if (value) return value;
+  if (config.isProd) {
+    // Never create production admins with the well-known development fallbacks.
+    throw new Error(`${name} is required when NODE_ENV=production (no default passwords in production)`);
+  }
   return fallback;
 }
 
@@ -37,11 +44,11 @@ function generatePassword(name) {
 }
 
 async function upsertAdmin({ name, email, password, role, mustChange = true }) {
-  const existing = await query('select id, role, is_active from admins where lower(email) = lower($1)', [email]);
+  const existing = await query('select id, role, is_active from admins where lower(email) = lower(?1)', [email]);
   if (existing.rows[0]) {
     if (resetPasswords) {
       assertPasswordPolicy(password, { email, name });
-      await query('update admins set password_hash = $2, must_change_password = $3, failed_login_count = 0, locked_until = null where id = $1', [
+      await query('update admins set password_hash = ?2, must_change_password = ?3, failed_login_count = 0, locked_until = null where id = ?1', [
         existing.rows[0].id,
         await hashPassword(password),
         mustChange,
@@ -53,7 +60,7 @@ async function upsertAdmin({ name, email, password, role, mustChange = true }) {
   assertPasswordPolicy(password, { email, name });
   const res = await query(
     `insert into admins (name, email, password_hash, role, must_change_password)
-     values ($1, lower($2), $3, $4, $5) returning id`,
+     values (?1, lower(?2), ?3, ?4, ?5) returning id`,
     [name, email, await hashPassword(password), role, mustChange],
   );
   return { id: res.rows[0].id, email, created: true };
@@ -109,7 +116,7 @@ async function main() {
   // --- sample data --------------------------------------------------------
   let sample = null;
   if (withSample) {
-    const investorCount = await query('select count(*)::int as count from investors');
+    const investorCount = await query('select count(*) as count from investors');
     if (investorCount.rows[0].count === 0) {
       sample = await createSampleData(actor);
     } else {
@@ -135,7 +142,7 @@ async function main() {
     if (sample.payUrl) process.stdout.write(`Sample payment link: ${sample.payUrl}\n`);
   }
   process.stdout.write('=============================================\n\n');
-  await closePool();
+  closeDatabase();
 }
 
 async function createSampleData(actor) {
@@ -243,9 +250,9 @@ async function createSampleData(actor) {
 
 async function summariseExisting() {
   const counts = await query(
-    `select (select count(*)::int from investors) as investors,
-            (select count(*)::int from investments) as investments,
-            (select count(*)::int from installments) as installments`,
+    `select (select count(*) from investors) as investors,
+            (select count(*) from investments) as investments,
+            (select count(*) from installments) as installments`,
   );
   const row = counts.rows[0];
   const investor = await query('select mobile from investors order by id asc limit 1');
@@ -260,6 +267,6 @@ async function summariseExisting() {
 
 main().catch(async (err) => {
   logger.error('seed failed', { err });
-  await closePool().catch(() => {});
+  closeDatabase();
   process.exit(1);
 });

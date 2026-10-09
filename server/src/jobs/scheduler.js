@@ -12,7 +12,8 @@
  *   * a job never crashes the server: failures are logged, recorded and retried
  *     on the next tick; stale STARTED rows are cleared at boot
  */
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
+import { NOW } from '../db/sql.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { dhakaDate, dhakaMinutesOfDay, parseHHMM } from '../utils/dates.js';
@@ -93,7 +94,7 @@ export async function runJobWithLock(job, { key, source = 'SCHEDULE', actor = nu
   }
   if (!force) {
     const inserted = await query(
-      `insert into job_runs (job_name, run_key, status) values ($1,$2,'STARTED')
+      `insert into job_runs (job_name, run_key, status) values (?1,?2,'STARTED')
        on conflict (job_name, run_key) do nothing returning id`,
       [job.name, runKey],
     );
@@ -104,7 +105,7 @@ export async function runJobWithLock(job, { key, source = 'SCHEDULE', actor = nu
   }
   // Forced (manual) runs always execute; keep a separate audit trail.
   const inserted = await query(
-    `insert into job_runs (job_name, run_key, status, detail) values ($1,$2,'STARTED',$3) returning id`,
+    `insert into job_runs (job_name, run_key, status, detail) values (?1,?2,'STARTED',?3) returning id`,
     [job.name, runKey, JSON.stringify({ source, forced: true })],
   );
   return execute(job, runKey, source, actor, req, inserted.rows[0].id);
@@ -119,8 +120,8 @@ async function execute(job, runKey, source, actor, req, runId) {
     const result = await job.handler({ runKey, source, actor, req, logger });
     const durationMs = Date.now() - started;
     await query(
-      `update job_runs set status = 'SUCCESS', finished_at = now(), duration_ms = $2,
-              items_processed = $3, detail = $4 where id = $1`,
+      `update job_runs set status = 'SUCCESS', finished_at = ${NOW}, duration_ms = ?2,
+              items_processed = ?3, detail = ?4 where id = ?1`,
       [runId, durationMs, Number(result?.itemsProcessed ?? 0), JSON.stringify(result?.detail ?? result ?? {})],
     );
     logger.info('job finished', { job: job.name, runKey, durationMs, items: Number(result?.itemsProcessed ?? 0) });
@@ -138,12 +139,12 @@ async function execute(job, runKey, source, actor, req, runId) {
     const durationMs = Date.now() - started;
     logger.error('job failed', { err, job: job.name, runKey, durationMs });
     // FAILED rows are retryable: the next tick will try again.
-    await query(`update job_runs set status = 'FAILED', finished_at = now(), duration_ms = $2, error = $3 where id = $1`, [
+    await query(`update job_runs set status = 'FAILED', finished_at = ${NOW}, duration_ms = ?2, error = ?3 where id = ?1`, [
       runId,
       durationMs,
       String(err?.message ?? err).slice(0, 500),
     ]).catch(() => {});
-    await query(`delete from job_runs where id = $1 and status = 'FAILED'`, [runId]).catch(() => {});
+    await query(`delete from job_runs where id = ?1 and status = 'FAILED'`, [runId]).catch(() => {});
     await audit.record({
       action: audit.AUDIT_ACTIONS.JOB_RUN,
       entity: 'job',
@@ -186,9 +187,10 @@ export async function startScheduler({ immediate = true } = {}) {
   registerDefaultJobs();
   // A crash mid-run leaves a STARTED row behind: clear those so the job retries.
   try {
+    const staleBefore = new Date(Date.now() - STALE_RUN_MINUTES * 60_000).toISOString();
     const cleared = await query(
-      `delete from job_runs where status = 'STARTED' and started_at < now() - ($1 || ' minutes')::interval returning id`,
-      [String(STALE_RUN_MINUTES)],
+      `delete from job_runs where status = 'STARTED' and started_at < ?1 returning id`,
+      [staleBefore],
     );
     if (cleared.rowCount > 0) logger.warn('cleared stale job runs', { count: cleared.rowCount });
   } catch (err) {
@@ -243,7 +245,7 @@ export async function runJobByName(name, { actor = null, req = null } = {}) {
 export async function recentRuns(limit = 20) {
   const res = await query(
     `select job_name, run_key, status, started_at, finished_at, duration_ms, items_processed, error, detail
-       from job_runs order by started_at desc limit $1`,
+       from job_runs order by started_at desc limit ?1`,
     [Math.min(Number(limit) || 20, 100)],
   );
   return res.rows;

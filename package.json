@@ -15,15 +15,15 @@
     "dev": "node scripts/dev.mjs",
     "build": "npm run build --workspace client",
     "start": "node server/server.js",
-    "migrate": "node --env-file=.env server/src/db/migrate.js",
-    "seed": "node --env-file=.env server/src/db/seed.js",
-    "test": "node --env-file=.env --test --test-concurrency=1 \"server/tests/*.test.js\"",
-    "test:unit": "node --env-file=.env --test --test-concurrency=1 \"server/tests/unit.*.test.js\"",
-    "check": "node scripts/check-env.mjs"
+    "migrate": "node --env-file-if-exists=.env server/src/db/migrate.js",
+    "seed": "node --env-file-if-exists=.env server/src/db/seed.js",
+    "test": "node --env-file-if-exists=.env --test --test-concurrency=1 \"server/tests/*.test.js\"",
+    "test:unit": "node --env-file-if-exists=.env --test --test-concurrency=1 \"server/tests/unit.*.test.js\"",
+    "check": "node scripts/check-env.mjs",
+    "db:check": "node --env-file-if-exists=.env server/src/db/check.js"
   },
   "dependencies": {
-    "express": "^4.21.2",
-    "pg": "^8.13.1"
+    "express": "^4.21.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",

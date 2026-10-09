@@ -3,7 +3,7 @@
  * Test runner: `node --test` from the repository root.
  *
  * Runs each test module in its own process (sequentially, so they can share one
- * PostgreSQL test database without stepping on each other) and prints a compact
+ * disposable test database without stepping on each other) and prints a compact
  * summary. Usage: `npm test` (add `--filter payments` to run matching files).
  */
 import { spawn } from 'node:child_process';

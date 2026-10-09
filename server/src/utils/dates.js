@@ -40,8 +40,8 @@ export function dhakaMinutesOfDay(instant = new Date()) {
 }
 
 /**
- * Coerce anything date-ish (pg string, Date object, ISO timestamp) into a plain
- * 'YYYY-MM-DD' string. Defensive: the pool already returns strings for `date`.
+ * Coerce anything date-ish (string, Date object, ISO timestamp) into a plain
+ * 'YYYY-MM-DD' string. Defensive: the database client already returns date columns as strings.
  */
 export function isoDateOnly(value) {
   if (value === null || value === undefined) return null;
@@ -82,8 +82,10 @@ export function addDays(isoDate, days) {
 
 export function addMonths(isoDate, months) {
   const [y, m, d] = String(isoDate).split('-').map(Number);
-  const year = y + Math.floor((m - 1 + months) / 12);
-  const month = ((m - 1 + months) % 12) + 1;
+  // Floor division and a non-negative remainder so negative offsets roll back correctly (JS % keeps the sign).
+  const total = m - 1 + months;
+  const year = y + Math.floor(total / 12);
+  const month = ((total % 12) + 12) % 12 + 1;
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
   return `${year}-${String(month).padStart(2, '0')}-${String(Math.min(d, lastDay)).padStart(2, '0')}`;
 }

@@ -3,7 +3,7 @@
  * payment record/link regeneration goes through here, FROM THE SERVICE LAYER,
  * with old + new values. audit_logs is append-only at the database level.
  */
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { maskMobile } from '../utils/mask.js';
 
@@ -126,7 +126,7 @@ export async function record(entry, client = undefined) {
     const sql = `
       insert into audit_logs
         (admin_id, actor_email, actor_role, action, entity, entity_id, old_value, new_value, meta, ip, user_agent, request_id)
-      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
       returning id`;
     const params = [
       adminId ?? actor?.id ?? null,
@@ -155,7 +155,7 @@ export async function list(filters = {}, client = undefined) {
   const params = [];
   const push = (value) => {
     params.push(value);
-    return `$${params.length}`;
+    return `?${params.length}`;
   };
   if (filters.adminId) where.push(`a.admin_id = ${push(filters.adminId)}`);
   if (filters.action) where.push(`a.action = ${push(filters.action)}`);
@@ -165,7 +165,7 @@ export async function list(filters = {}, client = undefined) {
   if (filters.to) where.push(`a.created_at <= ${push(filters.to)}`);
   if (filters.search) {
     const term = `%${String(filters.search).toLowerCase()}%`;
-    where.push(`(lower(a.actor_email) like ${push(term)} or lower(a.action) like $${params.length} or lower(a.entity) like $${params.length})`);
+    where.push(`(lower(a.actor_email) like ${push(term)} or lower(a.action) like ?${params.length} or lower(a.entity) like ?${params.length})`);
   }
   const whereSql = where.length ? `where ${where.join(' and ')}` : '';
   const limit = Math.min(Number(filters.limit) || 50, 200);
@@ -180,7 +180,7 @@ export async function list(filters = {}, client = undefined) {
     params,
     client,
   );
-  const total = await query(`select count(*)::int as count from audit_logs a ${whereSql}`, params.slice(0, params.length - 2), client);
+  const total = await query(`select count(*) as count from audit_logs a ${whereSql}`, params.slice(0, params.length - 2), client);
   return { rows: rows.rows, total: total.rows[0].count, limit, offset };
 }
 

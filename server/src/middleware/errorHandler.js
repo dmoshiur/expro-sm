@@ -3,14 +3,17 @@
  * plus the request id - never a stack trace, SQL text or provider payload.
  */
 import { config } from '../config/index.js';
-import { AppError, isAppError, notFound } from '../utils/errors.js';
+import { AppError, isAppError, notFound, fromDbError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
 export function notFoundHandler(req, res, next) {
   next(notFound(`Route not found: ${req.method} ${req.path}`));
 }
 
-export function errorHandler(err, req, res, _next) {
+export function errorHandler(rawErr, req, res, _next) {
+  // Database errors are kept raw through the service layer (so services can branch on
+  // err.code, e.g. duplicate trx ids) and converted to client-safe errors only here.
+  const err = fromDbError(rawErr) ?? rawErr;
   const requestId = req?.id ?? null;
   let status = err?.status ?? err?.statusCode ?? 500;
   let code = err?.code ?? 'INTERNAL';
@@ -19,13 +22,13 @@ export function errorHandler(err, req, res, _next) {
 
   if (!isAppError(err)) {
     // Unknown/unexpected: log fully, answer generically.
-    logger.error('unhandled error', { err, reqId: requestId, path: req?.path, method: req?.method });
+    logger.error('unhandled error', { err: rawErr, reqId: requestId, path: req?.path, method: req?.method });
     status = 500;
     code = 'INTERNAL';
     message = 'Something went wrong. Please try again.';
     details = undefined;
   } else if (status >= 500) {
-    logger.error('application error', { err, reqId: requestId, path: req?.path, method: req?.method, code });
+    logger.error('application error', { err: rawErr, reqId: requestId, path: req?.path, method: req?.method, code });
   }
 
   // Body parser / payload issues

@@ -5,7 +5,8 @@
  * Session model: the browser gets an opaque 256-bit token in an
  * httpOnly / Secure / SameSite=Strict cookie. Only SHA-256(token) is stored.
  */
-import { query, withTransaction } from '../db/pool.js';
+import { query, withTransaction } from '../db/client.js';
+import { NOW } from '../db/sql.js';
 import { config } from '../config/index.js';
 import { AppError, badRequest, conflict, forbidden, notFound, unauthorized } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
@@ -45,12 +46,12 @@ export function clearSessionCache() {
 // Admins / users
 // ---------------------------------------------------------------------------
 export async function findAdminByEmail(email, client = undefined) {
-  const res = await query('select * from admins where lower(email) = lower($1)', [email], client);
+  const res = await query('select * from admins where lower(email) = lower(?1)', [email], client);
   return res.rows[0] ?? null;
 }
 
 export async function getAdminById(id, client = undefined) {
-  const res = await query(`select ${PUBLIC_ADMIN_COLUMNS} from admins where id = $1`, [id], client);
+  const res = await query(`select ${PUBLIC_ADMIN_COLUMNS} from admins where id = ?1`, [id], client);
   return res.rows[0] ?? null;
 }
 
@@ -59,11 +60,11 @@ export async function listAdmins({ search, role, isActive, limit = 50, offset = 
   const params = [];
   const push = (v) => {
     params.push(v);
-    return `$${params.length}`;
+    return `?${params.length}`;
   };
   if (search) {
     const term = `%${String(search).toLowerCase()}%`;
-    where.push(`(lower(name) like ${push(term)} or lower(email) like $${params.length})`);
+    where.push(`(lower(name) like ${push(term)} or lower(email) like ?${params.length})`);
   }
   if (role) where.push(`role = ${push(role)}`);
   if (isActive !== undefined) where.push(`is_active = ${push(isActive)}`);
@@ -73,7 +74,7 @@ export async function listAdmins({ search, role, isActive, limit = 50, offset = 
     params,
     client,
   );
-  const total = await query(`select count(*)::int as count from admins ${whereSql}`, params.slice(0, params.length - 2), client);
+  const total = await query(`select count(*) as count from admins ${whereSql}`, params.slice(0, params.length - 2), client);
   return { rows: rows.rows, total: total.rows[0].count, limit, offset };
 }
 
@@ -85,7 +86,7 @@ export async function createAdmin({ name, email, password, role }, actor, req) {
   const passwordHash = await hashPassword(password);
   const res = await query(
     `insert into admins (name, email, password_hash, role)
-     values ($1, lower($2), $3, $4)
+     values (?1, lower(?2), ?3, ?4)
      returning ${PUBLIC_ADMIN_COLUMNS}`,
     [name, email, passwordHash, role],
   );
@@ -99,16 +100,16 @@ export async function createAdmin({ name, email, password, role }, actor, req) {
 /** Partial update of an admin. Role changes and disabling are audited distinctly. */
 export async function updateAdmin(id, changes, actor, req) {
   return withTransaction(async (client) => {
-    const before = await query('select * from admins where id = $1 for update', [id], client);
+    const before = await query('select * from admins where id = ?1 ', [id], client);
     const current = before.rows[0];
     if (!current) throw notFound('Admin not found');
 
     const sets = [];
-    // $1 is reserved for the id in the WHERE clause; SET params start at $2.
+    // ?1 is reserved for the id in the WHERE clause; SET params start at ?2.
     const params = [id];
     const push = (v) => {
       params.push(v);
-      return `$${params.length}`;
+      return `?${params.length}`;
     };
 
     if (changes.name !== undefined) sets.push(`name = ${push(changes.name)}`);
@@ -117,7 +118,7 @@ export async function updateAdmin(id, changes, actor, req) {
       if (!ROLES.includes(changes.role)) throw badRequest('Invalid role');
       if (current.role === 'SUPER_ADMIN' && changes.role !== 'SUPER_ADMIN') {
         const others = await query(
-          `select count(*)::int as count from admins where role = 'SUPER_ADMIN' and is_active and id <> $1`,
+          `select count(*) as count from admins where role = 'SUPER_ADMIN' and is_active and id <> ?1`,
           [id],
           client,
         );
@@ -128,7 +129,7 @@ export async function updateAdmin(id, changes, actor, req) {
     if (changes.is_active !== undefined) {
       if (current.role === 'SUPER_ADMIN' && changes.is_active === false) {
         const others = await query(
-          `select count(*)::int as count from admins where role = 'SUPER_ADMIN' and is_active and id <> $1`,
+          `select count(*) as count from admins where role = 'SUPER_ADMIN' and is_active and id <> ?1`,
           [id],
           client,
         );
@@ -139,15 +140,16 @@ export async function updateAdmin(id, changes, actor, req) {
       sets.push(`disabled_reason = ${push(changes.is_active ? null : changes.disabled_reason || 'Disabled by administrator')}`);
       if (changes.is_active === false) {
         await client.query(
-          `update sessions set revoked_at = now(), revoked_reason = 'ADMIN_DISABLED' where admin_id = $1 and revoked_at is null`,
+          `update sessions set revoked_at = ${NOW}, revoked_reason = 'ADMIN_DISABLED' where admin_id = ?1 and revoked_at is null`,
           [id],
         );
       }
     }
     if (sets.length === 0) return { ...current, ...changes };
+    sets.push(`updated_at = ${NOW}`);
 
     const res = await query(
-      `update admins set ${sets.join(', ')} where id = $1 returning ${PUBLIC_ADMIN_COLUMNS}`,
+      `update admins set ${sets.join(', ')} where id = ?1 returning ${PUBLIC_ADMIN_COLUMNS}`,
       params,
       client,
     );
@@ -205,12 +207,12 @@ export async function resetAdminPassword(id, { newPassword, mustChange = true },
   const passwordHash = await hashPassword(newPassword);
   await withTransaction(async (client) => {
     await query(
-      `update admins set password_hash = $2, password_changed_at = now(), failed_login_count = 0,
-        locked_until = null, must_change_password = $3 where id = $1`,
+      `update admins set password_hash = ?2, password_changed_at = ${NOW}, failed_login_count = 0,
+        locked_until = null, must_change_password = ?3 where id = ?1`,
       [id, passwordHash, mustChange],
       client,
     );
-    await client.query(`update sessions set revoked_at = now(), revoked_reason = 'PASSWORD_RESET' where admin_id = $1 and revoked_at is null`, [id]);
+    await client.query(`update sessions set revoked_at = ${NOW}, revoked_reason = 'PASSWORD_RESET' where admin_id = ?1 and revoked_at is null`, [id]);
   });
   await audit.record({
     action: audit.AUDIT_ACTIONS.PASSWORD_RESET,
@@ -228,7 +230,7 @@ export async function resetAdminTotp(id, actor, req) {
   const target = await getAdminById(id);
   if (!target) throw notFound('Admin not found');
   await query(
-    `update admins set totp_secret = null, totp_enabled = false, totp_last_step = null, totp_confirmed_at = null where id = $1`,
+    `update admins set totp_secret = null, totp_enabled = false, totp_last_step = null, totp_confirmed_at = null where id = ?1`,
     [id],
   );
   await audit.record({
@@ -243,7 +245,7 @@ export async function resetAdminTotp(id, actor, req) {
 }
 
 async function loadTotpSecret(adminId, client = undefined) {
-  const res = await query('select totp_secret from admins where id = $1', [adminId], client);
+  const res = await query('select totp_secret from admins where id = ?1', [adminId], client);
   const enc = res.rows[0]?.totp_secret;
   if (!enc) return null;
   return decryptField(enc, { aad: `admin:${adminId}:totp` });
@@ -299,11 +301,13 @@ export async function login({ email, password, totpCode }, req) {
     const failures = admin.failed_login_count + 1;
     const threshold = config.security.lockoutThreshold;
     const lock = failures >= threshold;
+    const lockedUntil = lock ? new Date(Date.now() + config.security.lockoutMinutes * 60_000) : null;
     await query(
-      `update admins set failed_login_count = $2,
-         locked_until = case when $3 then now() + ($4 || ' minutes')::interval else locked_until end
-       where id = $1`,
-      [admin.id, lock ? 0 : failures, lock, String(config.security.lockoutMinutes)],
+      `update admins set failed_login_count = ?2,
+         locked_until = case when ?3 then ?4 else locked_until end,
+         updated_at = ${NOW}
+       where id = ?1`,
+      [admin.id, lock ? 0 : failures, lock, lockedUntil],
     );
     await audit.record({
       action: lock ? audit.AUDIT_ACTIONS.LOGIN_LOCKED : audit.AUDIT_ACTIONS.LOGIN_FAILED,
@@ -326,7 +330,7 @@ export async function login({ email, password, totpCode }, req) {
     const secret = await loadTotpSecret(admin.id);
     const check = await verifyTotp(secret, code, { lastStep: admin.totp_last_step });
     if (!check.ok) {
-      await query('update admins set failed_login_count = failed_login_count + 1 where id = $1', [admin.id]);
+      await query('update admins set failed_login_count = failed_login_count + 1 where id = ?1', [admin.id]);
       await audit.record({
         action: audit.AUDIT_ACTIONS.TOTP_VERIFY_FAILED,
         entity: 'admin',
@@ -336,11 +340,11 @@ export async function login({ email, password, totpCode }, req) {
       });
       throw unauthorized('Invalid or already used 2FA code');
     }
-    await query('update admins set totp_last_step = $2 where id = $1', [admin.id, check.step]);
+    await query('update admins set totp_last_step = ?2 where id = ?1', [admin.id, check.step]);
   }
 
   await query(
-    'update admins set failed_login_count = 0, locked_until = null, last_login_at = now() where id = $1',
+    `update admins set failed_login_count = 0, locked_until = null, last_login_at = ${NOW} where id = ?1`,
     [admin.id],
   );
   await audit.record({ action: audit.AUDIT_ACTIONS.LOGIN_SUCCESS, entity: 'admin', entityId: admin.id, req });
@@ -362,7 +366,7 @@ export async function createSession(admin, req, client = undefined) {
   const expiresAt = new Date(Date.now() + config.security.sessionTtlHours * 3600_000);
   const res = await query(
     `insert into sessions (admin_id, token_hash, expires_at, ip, user_agent)
-     values ($1,$2,$3,$4,$5)
+     values (?1,?2,?3,?4,?5)
      returning id, expires_at`,
     [admin.id, tokenHash, expiresAt, req?.clientIp ?? null, String(req?.get?.('user-agent') ?? '').slice(0, 400) || null],
     client,
@@ -389,7 +393,7 @@ export async function resolveSession(token, req = null) {
             a.name, a.email, a.role, a.is_active, a.totp_enabled, a.must_change_password
        from sessions s
        join admins a on a.id = s.admin_id
-      where s.token_hash = $1`,
+      where s.token_hash = ?1`,
     [tokenHash],
   );
   const row = res.rows[0];
@@ -421,10 +425,10 @@ export async function resolveSession(token, req = null) {
 async function touchSession(sessionId, req) {
   try {
     await query(
-      `update sessions set last_seen_at = now(),
-         ip = coalesce($2, ip),
-         user_agent = coalesce($3, user_agent)
-       where id = $1`,
+      `update sessions set last_seen_at = ${NOW},
+         ip = coalesce(?2, ip),
+         user_agent = coalesce(?3, user_agent)
+       where id = ?1`,
       [sessionId, req?.clientIp ?? null, String(req?.get?.('user-agent') ?? '').slice(0, 400) || null],
     );
   } catch (err) {
@@ -447,18 +451,18 @@ export async function rotateSession(session, req) {
   const tokenHash = hashToken(token);
   const expiresAt = new Date(Date.now() + config.security.sessionTtlHours * 3600_000);
   await withTransaction(async (client) => {
-    const current = await query('select * from sessions where id = $1 for update', [session.sessionId], client);
+    const current = await query('select * from sessions where id = ?1 ', [session.sessionId], client);
     const row = current.rows[0];
     if (!row || row.revoked_at) throw unauthorized('Session is no longer valid');
     await client.query(
       `insert into sessions (admin_id, token_hash, expires_at, ip, user_agent, rotated_from)
-       values ($1,$2,$3,$4,$5,$6) returning id`,
+       values (?1,?2,?3,?4,?5,?6) returning id`,
       [row.admin_id, tokenHash, expiresAt, req?.clientIp ?? null, String(req?.get?.('user-agent') ?? '').slice(0, 400) || null, row.id],
     );
     await client.query(
-      `update sessions set revoked_at = now(), revoked_reason = 'ROTATED',
-         rotated_to = (select id from sessions where token_hash = $2)
-       where id = $1`,
+      `update sessions set revoked_at = ${NOW}, revoked_reason = 'ROTATED',
+         rotated_to = (select id from sessions where token_hash = ?2)
+       where id = ?1`,
       [row.id, tokenHash],
     );
   });
@@ -467,7 +471,7 @@ export async function rotateSession(session, req) {
 }
 
 export async function revokeSession(sessionId, reason = 'LOGOUT') {
-  await query(`update sessions set revoked_at = now(), revoked_reason = $2 where id = $1 and revoked_at is null`, [
+  await query(`update sessions set revoked_at = ${NOW}, revoked_reason = ?2 where id = ?1 and revoked_at is null`, [
     sessionId,
     reason,
   ]);
@@ -476,8 +480,8 @@ export async function revokeSession(sessionId, reason = 'LOGOUT') {
 
 export async function revokeAllSessionsForAdmin(adminId, { exceptSessionId = null } = {}) {
   await query(
-    `update sessions set revoked_at = now(), revoked_reason = 'REVOKED'
-      where admin_id = $1 and revoked_at is null and ($2::uuid is null or id <> $2::uuid)`,
+    `update sessions set revoked_at = ${NOW}, revoked_reason = 'REVOKED'
+      where admin_id = ?1 and revoked_at is null and (?2 is null or id <> ?2)`,
     [adminId, exceptSessionId],
   );
   sessionCache.clear();
@@ -486,7 +490,7 @@ export async function revokeAllSessionsForAdmin(adminId, { exceptSessionId = nul
 export async function listSessions(adminId, client = undefined) {
   const res = await query(
     `select id, ip, user_agent, created_at, last_seen_at, expires_at, revoked_at, revoked_reason
-       from sessions where admin_id = $1 order by created_at desc limit 25`,
+       from sessions where admin_id = ?1 order by created_at desc limit 25`,
     [adminId],
     client,
   );
@@ -497,7 +501,7 @@ export async function listSessions(adminId, client = undefined) {
 // Password change (self-service)
 // ---------------------------------------------------------------------------
 export async function changeOwnPassword(adminId, { currentPassword, newPassword }, req) {
-  const res = await query('select * from admins where id = $1', [adminId]);
+  const res = await query('select * from admins where id = ?1', [adminId]);
   const admin = res.rows[0];
   if (!admin) throw notFound('Admin not found');
   const ok = await verifyPassword(String(currentPassword ?? ''), admin.password_hash);
@@ -508,8 +512,8 @@ export async function changeOwnPassword(adminId, { currentPassword, newPassword 
   assertPasswordPolicy(newPassword, { email: admin.email, name: admin.name });
   const passwordHash = await hashPassword(newPassword);
   await query(
-    `update admins set password_hash = $2, password_changed_at = now(), must_change_password = false,
-       failed_login_count = 0, locked_until = null where id = $1`,
+    `update admins set password_hash = ?2, password_changed_at = ${NOW}, must_change_password = false,
+       failed_login_count = 0, locked_until = null where id = ?1`,
     [adminId, passwordHash],
   );
   await audit.record({ action: audit.AUDIT_ACTIONS.PASSWORD_CHANGED, entity: 'admin', entityId: adminId, actor: admin, req });
@@ -524,7 +528,7 @@ export async function startTotpSetup(adminId, req) {
   if (!admin) throw notFound('Admin not found');
   if (admin.totp_enabled) throw conflict('2FA is already enabled. Disable it first to re-enrol.');
   const secret = generateTotpSecret();
-  await query('update admins set totp_secret = $2, totp_enabled = false, totp_last_step = null where id = $1', [
+  await query('update admins set totp_secret = ?2, totp_enabled = false, totp_last_step = null where id = ?1', [
     adminId,
     encryptField(secret, { aad: `admin:${adminId}:totp` }),
   ]);
@@ -552,7 +556,7 @@ export async function confirmTotpSetup(adminId, code, req) {
     throw badRequest('That code is not valid. Check your device clock and try again.');
   }
   await query(
-    'update admins set totp_enabled = true, totp_last_step = $2, totp_confirmed_at = now() where id = $1',
+    `update admins set totp_enabled = true, totp_last_step = ?2, totp_confirmed_at = ${NOW} where id = ?1`,
     [adminId, check.step],
   );
   await audit.record({ action: audit.AUDIT_ACTIONS.TOTP_ENABLED, entity: 'admin', entityId: adminId, req });
@@ -561,7 +565,7 @@ export async function confirmTotpSetup(adminId, code, req) {
 
 /** Disabling 2FA requires the current password + a valid code. */
 export async function disableTotp(adminId, { password, code }, req) {
-  const res = await query('select * from admins where id = $1', [adminId]);
+  const res = await query('select * from admins where id = ?1', [adminId]);
   const admin = res.rows[0];
   if (!admin) throw notFound('Admin not found');
   if (!admin.totp_enabled) return { totp_enabled: false };
@@ -570,7 +574,7 @@ export async function disableTotp(adminId, { password, code }, req) {
   const secret = await loadTotpSecret(adminId);
   const check = await verifyTotp(secret, code, { lastStep: admin.totp_last_step });
   if (!check.ok) throw unauthorized('Invalid 2FA code');
-  await query('update admins set totp_secret = null, totp_enabled = false, totp_last_step = null where id = $1', [adminId]);
+  await query('update admins set totp_secret = null, totp_enabled = false, totp_last_step = null where id = ?1', [adminId]);
   await audit.record({ action: audit.AUDIT_ACTIONS.TOTP_DISABLED, entity: 'admin', entityId: adminId, meta: { bySelf: true }, req });
   return { totp_enabled: false };
 }
@@ -579,7 +583,7 @@ export async function disableTotp(adminId, { password, code }, req) {
 // Bootstrap
 // ---------------------------------------------------------------------------
 export async function countAdmins(client = undefined) {
-  const res = await query('select count(*)::int as count from admins', [], client);
+  const res = await query('select count(*) as count from admins', [], client);
   return res.rows[0].count;
 }
 
@@ -591,7 +595,7 @@ export async function ensureFirstSuperAdmin({ name, email, password }, req = nul
   const passwordHash = await hashPassword(password);
   const res = await query(
     `insert into admins (name, email, password_hash, role, must_change_password)
-     values ($1, lower($2), $3, 'SUPER_ADMIN', true)
+     values (?1, lower(?2), ?3, 'SUPER_ADMIN', true)
      returning ${PUBLIC_ADMIN_COLUMNS}`,
     [name, email, passwordHash],
   );

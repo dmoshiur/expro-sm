@@ -9,12 +9,13 @@
  *     the payment SUCCESS
  *   * duplicate callbacks, duplicate trxIds and replays are all no-ops
  */
-import { query, withTransaction } from '../db/pool.js';
+import { query, withTransaction } from '../db/client.js';
+import { NOW, inClause } from '../db/sql.js';
 import { config } from '../config/index.js';
 import { AppError, badRequest, conflict, notFound } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import { maskMobile } from '../utils/mask.js';
-import { dhakaDate } from '../utils/dates.js';
+import { addDays, dhakaDate } from '../utils/dates.js';
 import { formatInvoiceNumber, operationId } from '../utils/ids.js';
 import { getGateway } from './gateways/index.js';
 import * as audit from './audit.service.js';
@@ -41,12 +42,13 @@ export async function startPayment({ token, req, payerMobile = null }) {
   const gateway = getGateway();
 
   // Double-click protection: reuse a very recent, still-open attempt.
+  const reuseCutoff = new Date(Date.now() - REUSE_WINDOW_MS).toISOString();
   const recent = await query(
     `select * from payments
-      where installment_id = $1 and gateway = 'BKASH' and status in ('INITIATED','PENDING')
-        and created_at > now() - ($2 || ' milliseconds')::interval
+      where installment_id = ?1 and gateway = 'BKASH' and status in ('INITIATED','PENDING')
+        and created_at > ?2
       order by created_at desc limit 1`,
-    [installment.id, String(REUSE_WINDOW_MS)],
+    [installment.id, reuseCutoff],
   );
   if (recent.rows[0]?.raw_response?.bkashURL) {
     logger.info('reusing recent payment attempt', { paymentId: recent.rows[0].id, installmentId: installment.id });
@@ -73,7 +75,7 @@ export async function startPayment({ token, req, payerMobile = null }) {
   const inserted = await query(
     `insert into payments (installment_id, gateway, gateway_payment_id, invoice_number, amount, status, method,
                            gateway_status, operation_id, raw_response, initiated_at, payer_mobile)
-     values ($1,'BKASH',$2,$3,$4,'INITIATED','BKASH',$5,$6,$7, now(), $8)
+     values (?1,'BKASH',?2,?3,?4,'INITIATED','BKASH',?5,?6,?7, ${NOW}, ?8)
      returning *`,
     [
       installment.id,
@@ -123,7 +125,7 @@ export async function handleCallback({ linkToken, paymentId, req }) {
   if (!paymentId) throw badRequest('Missing payment id');
   const gateway = getGateway();
 
-  const paymentRes = await query('select * from payments where gateway_payment_id = $1', [paymentId]);
+  const paymentRes = await query('select * from payments where gateway_payment_id = ?1', [paymentId]);
   const payment = paymentRes.rows[0];
   if (!payment) throw notFound('Unknown payment');
 
@@ -173,8 +175,8 @@ export async function settleFromGateway({ payment, installment, result, source =
   if (normalized === 'PENDING' || normalized === 'UNKNOWN') {
     await query(
       `update payments set status = case when status = 'INITIATED' then 'PENDING' else status end,
-              gateway_status = coalesce($2, gateway_status), raw_response = $3, check_count = check_count + 1
-        where id = $1`,
+              gateway_status = coalesce(?2, gateway_status), raw_response = ?3, check_count = check_count + 1
+        where id = ?1`,
       [payment.id, result?.rawStatus ?? null, JSON.stringify(result?.raw ?? {})],
     );
     return { state: 'pending', payment: await getPayment(payment.id), installment };
@@ -211,7 +213,7 @@ export async function settleFromGateway({ payment, installment, result, source =
   let settled;
   try {
     settled = await withTransaction(async (client) => {
-      const locked = await client.query('select * from payments where id = $1 for update', [payment.id]);
+      const locked = await client.query('select * from payments where id = ?1 ', [payment.id]);
       const current = locked.rows[0];
       if (!current) throw notFound('Payment not found');
       if (current.status === 'SUCCESS') return { payment: current, installment, alreadySettled: true };
@@ -222,7 +224,7 @@ export async function settleFromGateway({ payment, installment, result, source =
 
       // Duplicate trxId (replay of another transaction): refuse to credit.
       const dupe = await client.query(
-        'select id, installment_id, status from payments where gateway = $1 and trx_id = $2 and id <> $3',
+        'select id, installment_id, status from payments where gateway = ?1 and trx_id = ?2 and id <> ?3',
         [current.gateway, result.trxId, current.id],
       );
       if (dupe.rows[0]) {
@@ -234,9 +236,9 @@ export async function settleFromGateway({ payment, installment, result, source =
 
       const updated = await client.query(
         `update payments
-            set status = 'SUCCESS', trx_id = $2, gateway_status = $3, raw_response = $4, verified_at = now(),
-                paid_at = now(), check_count = check_count + 1, failure_reason = null
-          where id = $1
+            set status = 'SUCCESS', trx_id = ?2, gateway_status = ?3, raw_response = ?4, verified_at = ${NOW},
+                paid_at = ${NOW}, check_count = check_count + 1, failure_reason = null, updated_at = ${NOW}
+          where id = ?1
           returning *`,
         [current.id, result.trxId, result.rawStatus ?? 'Completed', JSON.stringify(result.raw ?? {})],
       );
@@ -245,7 +247,7 @@ export async function settleFromGateway({ payment, installment, result, source =
       // Any sibling attempt for the same installment is now moot.
       await client.query(
         `update payments set status = 'CANCELLED', failure_reason = 'Superseded by a successful payment'
-          where installment_id = $1 and id <> $2 and status in ('INITIATED','PENDING')`,
+          where installment_id = ?1 and id <> ?2 and status in ('INITIATED','PENDING')`,
         [current.installment_id, current.id],
       );
 
@@ -277,7 +279,7 @@ export async function settleFromGateway({ payment, installment, result, source =
     // the attempt must end up FAILED and audited, which is done here so the
     // write is not rolled back with the transaction.
     const isDuplicate =
-      err?.code === 'DUPLICATE_TRX' || (err?.code === '23505' && String(err?.constraint ?? '').includes('trx'));
+      err?.code === 'DUPLICATE_TRX' || (err?.code === 'UNIQUE_VIOLATION' && /trx_id/.test(String(err?.constraint ?? '')));
     if (isDuplicate) {
       await markFailed(payment.id, {
         reason: `Duplicate trxId ${result.trxId}`,
@@ -315,8 +317,8 @@ export async function settleFromGateway({ payment, installment, result, source =
 
 async function markFailed(paymentId, { reason, gatewayStatus, req }) {
   await query(
-    `update payments set status = 'FAILED', failure_reason = $2, gateway_status = coalesce($3, gateway_status)
-      where id = $1 and status in ('INITIATED','PENDING')`,
+    `update payments set status = 'FAILED', failure_reason = ?2, gateway_status = coalesce(?3, gateway_status)
+      where id = ?1 and status in ('INITIATED','PENDING')`,
     [paymentId, String(reason).slice(0, 300), gatewayStatus ?? null],
   );
   await audit.record({
@@ -333,9 +335,9 @@ async function markTerminal(paymentId, status, { result, source, req, reason }) 
   if (payment.status === 'SUCCESS') return payment; // never downgrade a settled payment
   const updated = await query(
     `update payments
-        set status = $2, gateway_status = $3, raw_response = $4, failure_reason = $5, verified_at = now(),
-            check_count = check_count + 1
-      where id = $1 and status not in ('SUCCESS')
+        set status = ?2, gateway_status = ?3, raw_response = ?4, failure_reason = ?5, verified_at = ${NOW},
+            check_count = check_count + 1, updated_at = ${NOW}
+      where id = ?1 and status not in ('SUCCESS')
       returning *`,
     [
       paymentId,
@@ -378,9 +380,9 @@ export async function refreshPaymentStatus(paymentId, { req = null, source = 'ST
     return { state: result.normalized.toLowerCase(), payment: await getPayment(payment.id) };
   }
   await query(
-    `update payments set gateway_status = coalesce($2, gateway_status), raw_response = $3, check_count = check_count + 1,
+    `update payments set gateway_status = coalesce(?2, gateway_status), raw_response = ?3, check_count = check_count + 1,
             status = case when status = 'INITIATED' then 'PENDING' else status end
-      where id = $1`,
+      where id = ?1`,
     [payment.id, result.rawStatus ?? null, JSON.stringify(result.raw ?? {})],
   );
   return { state: 'pending', payment: await getPayment(payment.id) };
@@ -397,7 +399,7 @@ export async function refreshPaymentStatus(paymentId, { req = null, source = 'ST
  */
 export async function cancelPayment(paymentId, { reason } = {}, actor, req) {
   return withTransaction(async (client) => {
-    const locked = await client.query('select * from payments where id = $1 for update', [paymentId]);
+    const locked = await client.query('select * from payments where id = ?1 ', [paymentId]);
     const payment = locked.rows[0];
     if (!payment) throw notFound('Payment not found');
     if (payment.status === 'CANCELLED') return { ...payment, reversed: false }; // idempotent
@@ -408,7 +410,7 @@ export async function cancelPayment(paymentId, { reason } = {}, actor, req) {
     }
     const note = String(reason ?? 'Cancelled by administrator').slice(0, 500);
     const updated = await client.query(
-      `update payments set status = 'CANCELLED', failure_reason = $2, verified_at = now() where id = $1 returning *`,
+      `update payments set status = 'CANCELLED', failure_reason = ?2, verified_at = ${NOW}, updated_at = ${NOW} where id = ?1 returning *`,
       [paymentId, note],
     );
     let installment = null;
@@ -440,6 +442,13 @@ export async function cancelPayment(paymentId, { reason } = {}, actor, req) {
 // ---------------------------------------------------------------------------
 // Manual payments (cash / bank), recorded by an accountant
 // ---------------------------------------------------------------------------
+function normalizePaidAt(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) throw badRequest('paidAt must be a valid date or timestamp');
+  return date.toISOString();
+}
+
 export async function recordManualPayment(
   { installmentId, amount, method, reference, note, paidAt = null, notify = false },
   actor,
@@ -449,6 +458,9 @@ export async function recordManualPayment(
   if (!reference || String(reference).trim().length < 3) {
     throw badRequest('A payment reference (receipt/slip/deposit number) is required');
   }
+  // Timestamps are stored as UTC ISO strings (see db/values.js). Normalize whatever was sent:
+  // a bare date such as 2026-10-09 becomes midnight UTC, a full timestamp is converted to Z.
+  const paidAtIso = normalizePaidAt(paidAt);
 
   const result = await withTransaction(async (client) => {
     const locked = await client.query(
@@ -456,7 +468,7 @@ export async function recordManualPayment(
          from installments inst
          join investments v on v.id = inst.investment_id
          join investors i on i.id = v.investor_id
-        where inst.id = $1 for update`,
+        where inst.id = ?1 `,
       [installmentId],
     );
     const installment = locked.rows[0];
@@ -472,7 +484,7 @@ export async function recordManualPayment(
 
     // Guard against double entry of the same reference.
     const dupe = await client.query(
-      `select id from payments where installment_id = $1 and method = $2 and manual_reference = $3 and amount = $4 and status = 'SUCCESS'`,
+      `select id from payments where installment_id = ?1 and method = ?2 and manual_reference = ?3 and amount = ?4 and status = 'SUCCESS'`,
       [installmentId, method, String(reference).trim(), Number(amount)],
     );
     if (dupe.rows[0]) throw conflict('An identical payment is already recorded for this installment', { paymentId: dupe.rows[0].id });
@@ -480,7 +492,7 @@ export async function recordManualPayment(
     const inserted = await client.query(
       `insert into payments (installment_id, gateway, trx_id, invoice_number, amount, status, method, manual_reference,
                              reference_note, recorded_by_admin_id, gateway_status, raw_response, paid_at, verified_at)
-       values ($1,'MANUAL',$2,$3,$4,'SUCCESS',$5,$6,$7,$8,'MANUAL',$9, coalesce($10, now()), now())
+       values (?1,'MANUAL',?2,?3,?4,'SUCCESS',?5,?6,?7,?8,'MANUAL',?9, coalesce(?10, ${NOW}), ${NOW})
        returning *`,
       [
         installmentId,
@@ -492,7 +504,7 @@ export async function recordManualPayment(
         note ? String(note).slice(0, 500) : null,
         actor?.id ?? null,
         JSON.stringify({ manual: true, recordedBy: actor?.email ?? null, method, reference: String(reference).trim() }),
-        paidAt,
+        paidAtIso,
       ],
     );
     const payment = inserted.rows[0];
@@ -545,13 +557,13 @@ const PAYMENT_SELECT = `
     left join admins a on a.id = p.recorded_by_admin_id`;
 
 export async function getPayment(id, client = undefined) {
-  const res = await query(`${PAYMENT_SELECT} where p.id = $1`, [id], client);
+  const res = await query(`${PAYMENT_SELECT} where p.id = ?1`, [id], client);
   if (!res.rows[0]) throw notFound('Payment not found');
   return res.rows[0];
 }
 
 export async function getPaymentByGatewayId(gatewayPaymentId, client = undefined) {
-  const res = await query(`${PAYMENT_SELECT} where p.gateway_payment_id = $1`, [gatewayPaymentId], client);
+  const res = await query(`${PAYMENT_SELECT} where p.gateway_payment_id = ?1`, [gatewayPaymentId], client);
   return res.rows[0] ?? null;
 }
 
@@ -560,11 +572,13 @@ export async function listPayments(filters = {}, client = undefined) {
   const params = [];
   const push = (v) => {
     params.push(v);
-    return `$${params.length}`;
+    return `?${params.length}`;
   };
   if (filters.status) {
     const list = Array.isArray(filters.status) ? filters.status : [filters.status];
-    where.push(`p.status = any(${push(list)})`);
+    const statusIn = inClause('p.status', list, params.length + 1);
+    where.push(statusIn.sql);
+    params.push(...statusIn.args);
   }
   if (filters.method) where.push(`p.method = ${push(filters.method)}`);
   if (filters.gateway) where.push(`p.gateway = ${push(filters.gateway)}`);
@@ -574,17 +588,17 @@ export async function listPayments(filters = {}, client = undefined) {
   if (filters.from) where.push(`p.created_at >= ${push(filters.from)}`);
   if (filters.to) where.push(`p.created_at <= ${push(filters.to)}`);
   if (filters.paidFrom) where.push(`p.paid_at >= ${push(filters.paidFrom)}`);
-  if (filters.paidTo) where.push(`p.paid_at < (${push(filters.paidTo)}::date + interval '1 day')`);
+  // Inclusive end date: strictly before the UTC midnight after paidTo (as before, the bound is UTC).
+  if (filters.paidTo) where.push(`p.paid_at < ${push(`${addDays(String(filters.paidTo).slice(0, 10), 1)}T00:00:00.000Z`)}`);
   if (filters.search) {
     const term = `%${String(filters.search).toLowerCase().trim()}%`;
     where.push(
-      `(i.search_text like ${push(term)} or lower(coalesce(p.trx_id,'')) like $${params.length} or lower(coalesce(p.manual_reference,'')) like $${params.length} or cast(p.id as text) = $${params.length})`,
+      `(i.search_text like ${push(term)} or lower(coalesce(p.trx_id,'')) like ?${params.length} or lower(coalesce(p.manual_reference,'')) like ?${params.length} or cast(p.id as text) = ?${params.length})`,
     );
   }
   if (filters.stuckOlderThanMinutes) {
-    where.push(
-      `p.status in ('INITIATED','PENDING') and p.created_at < now() - (${push(String(filters.stuckOlderThanMinutes))} || ' minutes')::interval and p.gateway <> 'MANUAL'`,
-    );
+    const stuckCutoff = new Date(Date.now() - Number(filters.stuckOlderThanMinutes) * 60_000).toISOString();
+    where.push(`p.status in ('INITIATED', 'PENDING') and p.created_at < ${push(stuckCutoff)} and p.gateway <> 'MANUAL'`);
   }
   const whereSql = where.length ? `where ${where.join(' and ')}` : '';
   const limit = Math.min(Number(filters.limit) || 25, 200);
@@ -595,8 +609,8 @@ export async function listPayments(filters = {}, client = undefined) {
     client,
   );
   const total = await query(
-    `select count(*)::int as count,
-            coalesce(sum(case when p.status = 'SUCCESS' then p.amount else 0 end), 0)::bigint as success_amount
+    `select count(*) as count,
+            coalesce(sum(case when p.status = 'SUCCESS' then p.amount else 0 end), 0) as success_amount
        from payments p
        join installments inst on inst.id = p.installment_id
        join investments v on v.id = inst.investment_id
@@ -612,15 +626,16 @@ export async function listPayments(filters = {}, client = undefined) {
  * configured threshold, gateway payments only, oldest first.
  */
 export async function findStuckPayments({ olderThanMinutes = config.payments.reconcileStuckAfterMinutes, limit = 25 } = {}, client = undefined) {
+  const cutoff = new Date(Date.now() - Number(olderThanMinutes) * 60_000).toISOString();
   const res = await query(
     `${PAYMENT_SELECT}
-      where p.status in ('INITIATED','PENDING')
+      where p.status in ('INITIATED', 'PENDING')
         and p.gateway <> 'MANUAL'
         and p.gateway_payment_id is not null
-        and p.created_at < now() - ($1 || ' minutes')::interval
+        and p.created_at < ?1
       order by p.created_at asc
-      limit $2`,
-    [String(olderThanMinutes), limit],
+      limit ?2`,
+    [cutoff, limit],
     client,
   );
   return res.rows;
@@ -628,12 +643,14 @@ export async function findStuckPayments({ olderThanMinutes = config.payments.rec
 
 /** Give up on payments the gateway never completes (keeps the queue clean). */
 export async function expireAbandonedPayments({ olderThanHours = 24 } = {}, client = undefined) {
+  const cutoff = new Date(Date.now() - Number(olderThanHours) * 3_600_000).toISOString();
   const res = await query(
     `update payments
-        set status = 'CANCELLED', failure_reason = 'Abandoned: no gateway confirmation within ' || $1 || ' hours'
-      where status = 'PENDING' and gateway <> 'MANUAL' and created_at < now() - ($1 || ' hours')::interval
+        set status = 'CANCELLED', failure_reason = 'Abandoned: no gateway confirmation within ' || ?1 || ' hours',
+            updated_at = ${NOW}
+      where status = 'PENDING' and gateway <> 'MANUAL' and created_at < ?2
       returning id`,
-    [String(olderThanHours)],
+    [String(olderThanHours), cutoff],
     client,
   );
   return res.rows;

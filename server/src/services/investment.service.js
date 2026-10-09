@@ -5,12 +5,20 @@
  * INVARIANT: sum(installments.amount) == investments.total_amount, always
  * enforced inside a transaction and again by a deferred DB constraint trigger.
  */
-import { query, withTransaction } from '../db/pool.js';
+import { query, withTransaction } from '../db/client.js';
+import { NOW } from '../db/sql.js';
 import { badRequest, conflict, notFound } from '../utils/errors.js';
 import { buildInstallmentPlan, splitAmount } from '../utils/money.js';
 import { dhakaDate } from '../utils/dates.js';
 import * as audit from './audit.service.js';
-import { deriveStatus, syncStatus, refreshInvestmentStatus, buildToken, tokenExpiry } from './installment.service.js';
+import {
+  deriveStatus,
+  syncStatus,
+  refreshInvestmentStatus,
+  buildToken,
+  tokenExpiry,
+  assertInvestmentSchedule,
+} from './installment.service.js';
 
 export const INVESTMENT_STATUSES = ['ACTIVE', 'COMPLETED', 'CANCELLED'];
 const SORTABLE = ['created_at', 'total_amount', 'status', 'installment_count'];
@@ -20,11 +28,11 @@ const SORTABLE = ['created_at', 'total_amount', 'status', 'installment_count'];
 // ---------------------------------------------------------------------------
 const INVESTMENT_SELECT = `
   select v.*, i.name as investor_name, i.mobile as investor_mobile, i.status as investor_status,
-         (select count(*)::int from installments inst where inst.investment_id = v.id) as installment_rows,
-         (select coalesce(sum(inst.amount_paid), 0)::bigint from installments inst where inst.investment_id = v.id) as amount_collected,
-         (select coalesce(sum(inst.amount), 0)::bigint from installments inst
+         (select count(*) from installments inst where inst.investment_id = v.id) as installment_rows,
+         (select coalesce(sum(inst.amount_paid), 0) from installments inst where inst.investment_id = v.id) as amount_collected,
+         (select coalesce(sum(inst.amount), 0) from installments inst
            where inst.investment_id = v.id and inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE')) as amount_outstanding,
-         (select count(*)::int from installments inst
+         (select count(*) from installments inst
            where inst.investment_id = v.id and inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE')) as open_installments,
          (select min(inst.due_date) from installments inst
            where inst.investment_id = v.id and inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE')) as next_due_date
@@ -32,7 +40,7 @@ const INVESTMENT_SELECT = `
     join investors i on i.id = v.investor_id`;
 
 export async function getInvestment(id, client = undefined) {
-  const res = await query(`${INVESTMENT_SELECT} where v.id = $1`, [id]);
+  const res = await query(`${INVESTMENT_SELECT} where v.id = ?1`, [id], client);
   if (!res.rows[0]) throw notFound('Investment not found');
   return res.rows[0];
 }
@@ -42,13 +50,13 @@ export async function listInvestments(filters = {}, client = undefined) {
   const params = [];
   const push = (v) => {
     params.push(v);
-    return `$${params.length}`;
+    return `?${params.length}`;
   };
   if (filters.investorId) where.push(`v.investor_id = ${push(filters.investorId)}`);
   if (filters.status) where.push(`v.status = ${push(filters.status)}`);
   if (filters.search) {
     const term = `%${String(filters.search).toLowerCase().trim()}%`;
-    where.push(`(i.search_text like ${push(term)} or cast(v.id as text) = $${params.length})`);
+    where.push(`(i.search_text like ${push(term)} or cast(v.id as text) = ?${params.length})`);
   }
   if (filters.hasOverdue) {
     where.push(`exists (select 1 from installments inst where inst.investment_id = v.id and inst.status = 'OVERDUE')`);
@@ -65,17 +73,17 @@ export async function listInvestments(filters = {}, client = undefined) {
     client,
   );
   const total = await query(
-    `select count(*)::int as count from investments v join investors i on i.id = v.investor_id ${whereSql}`,
+    `select count(*) as count from investments v join investors i on i.id = v.investor_id ${whereSql}`,
     params.slice(0, params.length - 2),
     client,
   );
 
-  // Totals for the whole (unfiltered-by-page) result set.
+  // Totals for the whole (unfiltered-by-page) result set: per-investment collected sums
+  // over the same filtered rows.
   const totals = await query(
-    `select coalesce(sum(v.total_amount),0)::bigint as total_amount,
-            (select coalesce(sum(inst.amount_paid),0)::bigint from installments inst
-              join investments v2 on v2.id = inst.investment_id
-              join investors i2 on i2.id = v2.investor_id ${whereSql.replaceAll('i.', 'i2.')} ) as amount_collected
+    `select coalesce(sum(v.total_amount), 0) as total_amount,
+            coalesce(sum((select coalesce(sum(inst.amount_paid), 0) from installments inst
+                           where inst.investment_id = v.id)), 0) as amount_collected
        from investments v join investors i on i.id = v.investor_id ${whereSql}`,
     params.slice(0, params.length - 2),
     client,
@@ -87,11 +95,11 @@ export async function listInvestments(filters = {}, client = undefined) {
 export async function getInvestmentDetail(id, client = undefined) {
   const investment = await getInvestment(id, client);
   const installments = await query(
-    `select inst.*, greatest(inst.amount - inst.amount_paid, 0)::bigint as outstanding,
-            (inst.pay_token_hash is not null and inst.token_expires_at > now()) as pay_link_active,
-            (select count(*)::int from payments p where p.installment_id = inst.id) as payment_count,
-            (select coalesce(sum(p.amount),0)::bigint from payments p where p.installment_id = inst.id and p.status = 'SUCCESS') as amount_paid_success
-       from installments inst where inst.investment_id = $1 order by inst.serial asc`,
+    `select inst.*, max(inst.amount - inst.amount_paid, 0) as outstanding,
+            (inst.pay_token_hash is not null and inst.token_expires_at > ${NOW}) as pay_link_active,
+            (select count(*) from payments p where p.installment_id = inst.id) as payment_count,
+            (select coalesce(sum(p.amount),0) from payments p where p.installment_id = inst.id and p.status = 'SUCCESS') as amount_paid_success
+       from installments inst where inst.investment_id = ?1 order by inst.serial asc`,
     [id],
     client,
   );
@@ -100,7 +108,7 @@ export async function getInvestmentDetail(id, client = undefined) {
        from payments p
        join installments inst on inst.id = p.installment_id
        left join admins a on a.id = p.recorded_by_admin_id
-      where inst.investment_id = $1
+      where inst.investment_id = ?1
       order by p.created_at desc limit 200`,
     [id],
     client,
@@ -114,7 +122,7 @@ export async function getInvestmentDetail(id, client = undefined) {
 export async function createInvestment(data, actor, req) {
   const { investorId, totalAmount, installmentCount, firstDueDate, interval = 'MONTHLY', title, notes } = data;
   return withTransaction(async (client) => {
-    const investor = await client.query('select id, name, status, deleted_at from investors where id = $1', [investorId]);
+    const investor = await client.query('select id, name, status, deleted_at from investors where id = ?1', [investorId]);
     const inv = investor.rows[0];
     if (!inv) throw notFound('Investor not found');
     if (inv.deleted_at) throw badRequest('Cannot add an investment to a deleted investor');
@@ -124,7 +132,7 @@ export async function createInvestment(data, actor, req) {
 
     const inserted = await client.query(
       `insert into investments (investor_id, title, total_amount, installment_count, interval, first_due_date, notes, created_by, updated_by, status)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$8,'ACTIVE') returning *`,
+       values (?1,?2,?3,?4,?5,?6,?7,?8,?8,'ACTIVE') returning *`,
       [investorId, title ?? null, totalAmount, installmentCount, interval, firstDueDate, notes ?? null, actor?.id ?? null],
     );
     const investment = inserted.rows[0];
@@ -135,7 +143,7 @@ export async function createInvestment(data, actor, req) {
       const expiresAt = tokenExpiry();
       const res = await client.query(
         `insert into installments (investment_id, serial, amount, due_date, status, pay_token_hash, token_expires_at, token_issued_at)
-         values ($1,$2,$3,$4,'PENDING',$5,$6,now()) returning *`,
+         values (?1,?2,?3,?4,'PENDING',?5,?6,${NOW}) returning *`,
         [investment.id, item.serial, item.amount, item.dueDate, token.tokenHash, expiresAt],
       );
       installments.push({ ...res.rows[0], pay_token: token.token });
@@ -148,6 +156,8 @@ export async function createInvestment(data, actor, req) {
     }
 
     await refreshInvestmentStatus(client, investment.id);
+    // Service-layer replacement for the deferred "installments must total the investment" trigger.
+    await assertInvestmentSchedule(client, investment.id);
     await audit.record(
       {
         action: audit.AUDIT_ACTIONS.INVESTMENT_CREATED,
@@ -181,12 +191,12 @@ export async function createInvestment(data, actor, req) {
  */
 export async function changeInvestmentTotal(id, { totalAmount, reason, strategy = 'REDISTRIBUTE' }, actor, req) {
   return withTransaction(async (client) => {
-    const current = await client.query('select * from investments where id = $1 for update', [id]);
+    const current = await client.query('select * from investments where id = ?1 ', [id]);
     const before = current.rows[0];
     if (!before) throw notFound('Investment not found');
     if (Number(totalAmount) === Number(before.total_amount)) return before;
 
-    const rows = await client.query('select * from installments where investment_id = $1 order by serial for update', [id]);
+    const rows = await client.query('select * from installments where investment_id = ?1 order by serial ', [id]);
     const fixed = rows.rows.filter((r) => ['PAID', 'WAIVED', 'CANCELLED'].includes(r.status));
     const open = rows.rows.filter((r) => !['PAID', 'WAIVED', 'CANCELLED'].includes(r.status));
     if (open.length === 0) throw conflict('All installments are settled; nothing left to redistribute');
@@ -225,19 +235,20 @@ export async function changeInvestmentTotal(id, { totalAmount, reason, strategy 
       if (Number(row.newAmount) < Number(row.amount_paid)) {
         throw badRequest(`Installment #${row.serial} already has more paid than its new amount`);
       }
-      await client.query('update installments set amount = $2 where id = $1', [row.id, row.newAmount]);
+      await client.query('update installments set amount = ?2 where id = ?1', [row.id, row.newAmount]);
     }
-    await client.query('update investments set total_amount = $2, updated_by = $3 where id = $1', [
+    await client.query(`update investments set total_amount = ?2, updated_by = ?3, updated_at = ${NOW} where id = ?1`, [
       id,
       totalAmount,
       actor?.id ?? null,
     ]);
 
-    // Verify the invariant explicitly (the DB trigger would catch it too).
-    const sums = await client.query('select coalesce(sum(amount),0)::bigint as total from installments where investment_id = $1', [id]);
+    // Verify the invariant explicitly before COMMIT (replaces the deferred DB trigger).
+    const sums = await client.query('select coalesce(sum(amount),0) as total from installments where investment_id = ?1', [id]);
     if (Number(sums.rows[0].total) !== Number(totalAmount)) {
       throw conflict('Redistribution failed to preserve the total', { sum: Number(sums.rows[0].total) });
     }
+    await assertInvestmentSchedule(client, id);
 
     await audit.record(
       {
@@ -252,7 +263,7 @@ export async function changeInvestmentTotal(id, { totalAmount, reason, strategy 
       },
     );
 
-    const updated = await client.query(`${INVESTMENT_SELECT} where v.id = $1`, [id]);
+    const updated = await client.query(`${INVESTMENT_SELECT} where v.id = ?1`, [id]);
     return updated.rows[0];
   });
 }
@@ -260,19 +271,19 @@ export async function changeInvestmentTotal(id, { totalAmount, reason, strategy 
 export async function setInvestmentStatus(id, status, { reason }, actor, req) {
   if (!['ACTIVE', 'COMPLETED', 'CANCELLED'].includes(status)) throw badRequest('Invalid status');
   return withTransaction(async (client) => {
-    const current = await client.query('select * from investments where id = $1 for update', [id]);
+    const current = await client.query('select * from investments where id = ?1 ', [id]);
     const before = current.rows[0];
     if (!before) throw notFound('Investment not found');
     if (status === 'CANCELLED') {
       const paid = await client.query(
-        `select count(*)::int as count from installments where investment_id = $1 and amount_paid > 0`,
+        `select count(*) as count from installments where investment_id = ?1 and amount_paid > 0`,
         [id],
       );
       if (paid.rows[0].count > 0 && !reason) {
         throw badRequest('A reason is required to cancel an investment that already has payments');
       }
     }
-    const res = await client.query('update investments set status = $2, updated_by = $3 where id = $1 returning *', [
+    const res = await client.query(`update investments set status = ?2, updated_by = ?3, updated_at = ${NOW} where id = ?1 returning *`, [
       id,
       status,
       actor?.id ?? null,
@@ -295,7 +306,7 @@ export async function setInvestmentStatus(id, status, { reason }, actor, req) {
 /** Re-derive every installment status of an investment (used after edits). */
 export async function resyncSchedule(investmentId, actor = null) {
   return withTransaction(async (client) => {
-    const rows = await client.query('select id from installments where investment_id = $1 order by serial', [investmentId]);
+    const rows = await client.query('select id from installments where investment_id = ?1 order by serial', [investmentId]);
     const out = [];
     for (const row of rows.rows) out.push(await syncStatus(client, row.id));
     await refreshInvestmentStatus(client, investmentId);

@@ -5,7 +5,8 @@ import { parsePagination, paged } from '../utils/pagination.js';
 import { dhakaDate } from '../utils/dates.js';
 import * as investorService from '../services/investor.service.js';
 import { deriveStatus } from '../services/installment.service.js';
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
+import { NOW } from '../db/sql.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -63,21 +64,21 @@ export async function detail(req, res) {
 
   const investments = await query(
     `select v.id, v.title, v.total_amount, v.installment_count, v.status, v.interval, v.created_at,
-            coalesce(sum(inst.amount_paid),0)::bigint as collected,
-            coalesce(sum(case when inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE') then inst.amount - inst.amount_paid else 0 end),0)::bigint as outstanding,
+            coalesce(sum(inst.amount_paid),0) as collected,
+            coalesce(sum(case when inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE') then inst.amount - inst.amount_paid else 0 end),0) as outstanding,
             min(case when inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE') then inst.due_date end) as next_due_date
        from investments v
        left join installments inst on inst.investment_id = v.id
-      where v.investor_id = $1
+      where v.investor_id = ?1
       group by v.id order by v.created_at desc`,
     [id],
   );
 
   const installments = await query(
-    `select inst.*, v.id as investment_id, greatest(inst.amount - inst.amount_paid, 0)::bigint as outstanding,
-            (inst.pay_token_hash is not null and inst.token_expires_at > now()) as pay_link_active
+    `select inst.*, v.id as investment_id, max(inst.amount - inst.amount_paid, 0) as outstanding,
+            (inst.pay_token_hash is not null and inst.token_expires_at > ${NOW}) as pay_link_active
        from installments inst join investments v on v.id = inst.investment_id
-      where v.investor_id = $1 order by v.id desc, inst.serial asc`,
+      where v.investor_id = ?1 order by v.id desc, inst.serial asc`,
     [id],
   );
 
@@ -87,7 +88,7 @@ export async function detail(req, res) {
        from payments p
        join installments inst on inst.id = p.installment_id
        join investments v on v.id = inst.investment_id
-      where v.investor_id = $1 order by p.created_at desc limit 100`,
+      where v.investor_id = ?1 order by p.created_at desc limit 100`,
     [id],
   );
 
