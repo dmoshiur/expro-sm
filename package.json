@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "npm run build --workspace client",
-    "start": "node --env-file=.env server/server.js",
+    "start": "node server/server.js",
     "migrate": "node --env-file=.env server/src/db/migrate.js",
     "seed": "node --env-file=.env server/src/db/seed.js",
     "test": "node --env-file=.env --test --test-concurrency=1 \"server/tests/*.test.js\"",
