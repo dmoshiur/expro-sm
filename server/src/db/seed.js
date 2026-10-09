@@ -22,6 +22,7 @@ import { createInvestment } from '../services/investment.service.js';
 import { issueToken } from '../services/paylink.service.js';
 import { addDays, dhakaDate } from '../utils/dates.js';
 import { formatBDT } from '../utils/money.js';
+import { AppError } from '../utils/errors.js';
 
 const args = process.argv.slice(2);
 // Sample data is for development only. Production seeding needs an explicit --sample.
@@ -41,6 +42,16 @@ function envPassword(name, fallback) {
 function generatePassword(name) {
   // Strong, policy-compliant, printed once for the operator.
   return `${name}-${randomBytes(9).toString('base64url')}Aa1!`;
+}
+
+/** Re-throws WEAK_PASSWORD naming the SEED_* variable so operators know which one to fix. */
+function withPasswordEnvContext(envName, promise) {
+  return promise.catch((err) => {
+    if (err && err.code === 'WEAK_PASSWORD') {
+      throw new AppError(err.status, 'WEAK_PASSWORD', `${envName}: ${err.message}`, err.details);
+    }
+    throw err;
+  });
 }
 
 async function upsertAdmin({ name, email, password, role, mustChange = true }) {
@@ -73,14 +84,14 @@ async function main() {
   const superEmail = process.env.SEED_SUPER_ADMIN_EMAIL || 'superadmin@investorportal.test';
   const superPassword = envPassword('SEED_SUPER_ADMIN_PASSWORD', 'Portal#Root#2026!');
 
-  const bootstrap = await ensureFirstSuperAdmin({
-    name: process.env.SEED_SUPER_ADMIN_NAME || 'Super Admin',
-    email: superEmail,
-    password: superPassword,
-  }).catch(async (err) => {
-    if (String(err?.message ?? '').includes('at least 12')) throw err;
-    throw err;
-  });
+  const bootstrap = await withPasswordEnvContext(
+    'SEED_SUPER_ADMIN_PASSWORD',
+    ensureFirstSuperAdmin({
+      name: process.env.SEED_SUPER_ADMIN_NAME || 'Super Admin',
+      email: superEmail,
+      password: superPassword,
+    }),
+  );
 
   const created = [];
   if (bootstrap.created) {
@@ -97,17 +108,23 @@ async function main() {
 
   const accountantEmail = process.env.SEED_ACCOUNTANT_EMAIL || 'accountant@investorportal.test';
   const accountantPassword = envPassword('SEED_ACCOUNTANT_PASSWORD', 'Portal#Ledger#2026!');
-  const accountant = await upsertAdmin({
-    name: 'Accounts Officer',
-    email: accountantEmail,
-    password: accountantPassword,
-    role: 'ACCOUNTANT',
-  });
+  const accountant = await withPasswordEnvContext(
+    'SEED_ACCOUNTANT_PASSWORD',
+    upsertAdmin({
+      name: 'Accounts Officer',
+      email: accountantEmail,
+      password: accountantPassword,
+      role: 'ACCOUNTANT',
+    }),
+  );
   if (accountant.created) created.push({ ...accountant, password: accountantPassword, role: 'ACCOUNTANT' });
 
   const viewerEmail = process.env.SEED_VIEWER_EMAIL || 'viewer@investorportal.test';
   const viewerPassword = envPassword('SEED_VIEWER_PASSWORD', 'Portal#Reports#2026!');
-  const viewer = await upsertAdmin({ name: 'Report Viewer', email: viewerEmail, password: viewerPassword, role: 'VIEWER' });
+  const viewer = await withPasswordEnvContext(
+    'SEED_VIEWER_PASSWORD',
+    upsertAdmin({ name: 'Report Viewer', email: viewerEmail, password: viewerPassword, role: 'VIEWER' }),
+  );
   if (viewer.created) created.push({ ...viewer, password: viewerPassword, role: 'VIEWER' });
 
   const adminRow = await query(`select * from admins where role = 'SUPER_ADMIN' order by id asc limit 1`);
