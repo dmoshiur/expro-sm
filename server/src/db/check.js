@@ -6,7 +6,7 @@
  * Never prints the database URL or the auth token.
  */
 import { connectDatabase, closeDatabase, probeForeignKeys, query } from './client.js';
-import { listMigrationFiles, appliedMigrations } from './migrate.js';
+import { runMigrations } from './migrate.js';
 
 /** Counts rows that break the money/share rules. Run after an import: both counts must be 0. */
 export async function countInvariantViolations() {
@@ -27,15 +27,15 @@ export async function runDbCheck({ write = (s) => process.stdout.write(s) } = {}
   write(`Database reachable: ${target.kind} (${target.host})\n`);
   const version = await query('select sqlite_version() as version');
   write(`Engine: libSQL/SQLite ${version.rows[0].version}\n`);
+  const status = await runMigrations({ dryRun: true });
+  const pending = status.pending;
+  write(`Migrations applied: ${status.skipped.length} of ${status.skipped.length + pending.length}\n`);
+  if (pending.length) {
+    write(`Pending migrations: ${pending.join(', ')} (run "npm run migrate")\n`);
+    return { target, foreignKeys: 'unknown', pending, violations: { scheduleMismatch: 0, nomineeMismatch: 0 } };
+  }
   const fk = await probeForeignKeys();
   write(`Foreign keys: ${fk}\n`);
-
-  const files = await listMigrationFiles();
-  const applied = await appliedMigrations().catch(() => []);
-  const done = new Set(applied.map((r) => r.filename));
-  const pending = files.filter((f) => !done.has(f));
-  write(`Migrations applied: ${applied.length} of ${files.length}\n`);
-  if (pending.length) write(`Pending migrations: ${pending.join(', ')} (run "npm run migrate")\n`);
   const violations = await countInvariantViolations();
   write(`Invariants: schedule mismatches ${violations.scheduleMismatch}, nominee share mismatches ${violations.nomineeMismatch}\n`);
   return { target, foreignKeys: fk, pending, violations };

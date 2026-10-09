@@ -27,8 +27,8 @@ production and nothing else to deploy (no Redis, no queue, no cron, no Docker).
 
 * **Node.js ≥ 22** (no build step for the server; uses `--env-file`, `--test`,
   `node:test`, global `fetch`, `node:crypto`).
-* **PostgreSQL ≥ 14** (Docker, a local install, or Supabase).
-* Runtime dependencies: `express` and `pg`. Client libraries: `react`,
+* **Turso/libSQL** (remote Turso in production; disposable local libSQL files for tests/dev).
+* Runtime dependencies: `express` and `@libsql/client`. Client libraries: `react`,
   `react-dom`, `react-router-dom`, `vite`, `@vitejs/plugin-react`. Nothing else.
 * Node's built-in SQL-free tooling is used for everything else: password
   hashing (scrypt), sessions (HMAC + httpOnly cookie), 2FA (TOTP RFC 6238),
@@ -38,16 +38,16 @@ production and nothing else to deploy (no Redis, no queue, no cron, no Docker).
 ## Quick start (local)
 
 ```bash
-git clone <this repo> && cd expro-sm/investor-portal
+git clone <this repo> && cd expro-sm
 npm install                                   # installs workspaces: server + client
 
 cp .env.example .env
 node -e "console.log('SESSION_SECRET=' + require('crypto').randomBytes(48).toString('base64url'))"
 node -e "console.log('ENCRYPTION_KEY=' + require('crypto').randomBytes(32).toString('hex'))"
-#   → paste both into .env, then set DATABASE_URL
+#   → paste both into .env, then set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN
 
-npm run check      # validates env, DB reachability and migration state
 npm run migrate    # applies server/src/db/migrations/*.sql in order
+npm run db:check   # verifies migration state and invariants
 npm run seed       # first SUPER_ADMIN (+ sample data; see --no-sample)
 npm run build      # builds the SPA into client/dist
 npm start          # http://localhost:3000  (API + SPA, one process)
@@ -81,7 +81,7 @@ does the same checks without starting the server.
 | Group | Keys | Notes |
 | --- | --- | --- |
 | Runtime | `NODE_ENV`, `PORT`, `BIND_HOST`, `LOG_LEVEL`, `PUBLIC_BASE_URL` | `BIND_HOST=0.0.0.0`; `PUBLIC_BASE_URL` builds payment links and the bKash callback |
-| Database | `DATABASE_URL`, `DB_SSL`, `DB_SSL_REJECT_UNAUTHORIZED`, `DB_POOL_MAX`, `DB_STATEMENT_TIMEOUT_MS` | `DB_SSL=auto` turns TLS on for any non-localhost host |
+| Database | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DB_MIGRATE_ON_START` | Remote Turso required in production; no PostgreSQL or localhost DB fallback |
 | Secrets | `SESSION_SECRET` (≥32 chars), `ENCRYPTION_KEY` (64 hex chars) | rotating `ENCRYPTION_KEY` makes stored NID/TOTP ciphertext unreadable |
 | Sessions | `SESSION_TTL_HOURS`, `SESSION_ROTATE_AFTER_MINUTES`, `COOKIE_SECURE`, `COOKIE_NAME`, `ALLOWED_ORIGINS`, `TRUST_PROXY` | cookies are `httpOnly`, `SameSite=Strict`, and `Secure` when `NODE_ENV=production` |
 | Lockout/limits | `ADMIN_LOCKOUT_THRESHOLD`, `ADMIN_LOCKOUT_MINUTES`, `RATE_LIMIT_*` | in-memory fixed-window limiters, per process |
@@ -97,38 +97,69 @@ extension or `Content-Type`. Nothing uploaded is ever served from a static
 folder: bytes live in the database, the NID scan is encrypted, and reads go
 through permission-checked routes that audit every access.
 
-## Supabase (managed PostgreSQL)
+## Turso setup
 
-1. Create the project, then **Project Settings → Database → Connection string →
-   URI**. Use the *connection pooler* host for the app: it survives IPv4/IPv6
-   and connection recycling better than the direct host.
-2. Append `?sslmode=require` (and keep `DB_SSL=auto`,
-   `DB_SSL_REJECT_UNAUTHORIZED=false` unless you pin the CA).
-3. Put it in `.env` as `DATABASE_URL` and run `npm run migrate` followed by
-   `npm run seed` (the seed's first-run branch only creates the initial admins).
+The application uses `@libsql/client` exclusively. Create a Turso database and
+store its URL (`libsql://<database>-<org>.turso.io`) and auth token as
+`TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. Production rejects file, in-memory,
+PostgreSQL, HTTP and localhost database URLs. No PostgreSQL service is needed;
+`tools/pg-to-turso/` contains only optional one-time import tools/reference SQL.
 
-```env
-DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
-```
-
-Row Level Security is enabled on every table with **no policies**, so
-PostgREST/anon keys cannot read anything; the app connects as the table owner
-and bypasses RLS by design. All application access goes through the API, which
-enforces the role matrix in [docs/permissions.md](investor-portal/docs/permissions.md).
+Local development can use `NODE_ENV=development` and a `file:` URL. Tests use
+isolated files through the same libSQL client, not a localhost database server.
 
 ## Migrations
 
 Numbered SQL files in `server/src/db/migrations/` are applied in filename order
-and recorded in `schema_migrations` with a checksum. Editing an applied file
-fails the drift guard — add a new `004_*.sql` instead.
+and recorded in `schema_migrations` with a SHA-256 checksum. Each file's SQL and
+history row commit in one write transaction. Failed files roll back, stop the
+run, and remain pending. Previously committed files are skipped on retry.
+Never edit an applied file; add a new numbered migration instead.
 
 ```bash
-npm run migrate              # apply pending migrations
-npm run migrate -- --dry-run # show what would be applied, touch nothing
+npm run migrate              # create/validate metadata, then apply all pending SQL
+npm run migrate -- --dry-run # read-only checksum/pending check; no tables created
+npm run db:check             # migration status, then FK/invariant checks
 ```
 
-The server also applies pending migrations at boot unless `RUN_MIGRATIONS_ON_START=false`.
-Deploy order is therefore: `npm ci && npm run build`, restart, done.
+The runner creates `schema_migrations` idempotently before reading it on an apply
+run. Verify-only mode recognizes a fresh empty database without querying a
+nonexistent table. Incompatible metadata or existing application tables without
+history are refused, not automatically baselined. Such cases need operator
+schema/history review; see [docs/database.md](docs/database.md).
+
+Production defaults to `DB_MIGRATE_ON_START=false`: the server refuses to listen
+with pending migrations or checksum drift. Dev defaults to true. The explicit
+production deployment order is build → migrate → start; opting into
+`DB_MIGRATE_ON_START=true` runs the same runner before listening.
+
+## Render deployment / redeployment
+
+Use the repository root (leave Render **Root Directory** blank), Node ≥22.9,
+and these commands:
+
+* **Build Command:** `npm ci && npm run build`
+* **Pre-Deploy Command** (if available): `npm run migrate`
+* **Start Command:** `npm start`
+* If a pre-deploy command is unavailable, use **Start Command**:
+  `npm run migrate && npm start` (the `&&` must remain).
+* **Health Check Path:** `/api/health`
+
+Set `NODE_ENV=production`, `BIND_HOST=0.0.0.0`,
+`PUBLIC_BASE_URL=https://<your-service>.onrender.com`, the Turso URL/token,
+`SESSION_SECRET`, and `ENCRYPTION_KEY` in Render's Environment tab. Keep existing
+security keys and payment/SMS settings unchanged. Render supplies `PORT`.
+Keep `DB_MIGRATE_ON_START=false` with the explicit command above, or alternatively
+use `DB_MIGRATE_ON_START=true` with `npm start` alone.
+
+Redeploy the revision containing this fix. On a fresh database expect
+`migration applied` for `001_turso_initial_schema.sql`, then `migrations complete`,
+`database connected`, the foreign-key probe, and `investor portal listening`.
+On subsequent deploys the initial migration is skipped. Run `npm run db:check`
+in the Render shell after migration: pending migrations must be zero and both
+invariant mismatch counts must be zero. Do not run a reset, import, or sample
+seed as part of repair. If migration reports incompatible/untracked schema,
+stop and follow the operator-review guidance rather than editing history.
 
 ## bKash
 
