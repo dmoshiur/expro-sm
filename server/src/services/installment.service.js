@@ -3,10 +3,11 @@
  * reinstate, payment application and the overdue sweep.
  *
  * Invariant: sum(installments.amount) == investment.total_amount.
- * It is enforced by the service (inside a transaction) AND by a deferred DB
- * constraint trigger, so a bad write can never be committed.
+ * Enforced in the service layer inside the write transaction (assertInvestmentSchedule),
+ * before COMMIT. PostgreSQL used a deferred constraint trigger for this; see docs/database.md.
  */
-import { query, withTransaction } from '../db/pool.js';
+import { query, withTransaction } from '../db/client.js';
+import { NOW, inClause } from '../db/sql.js';
 import { badRequest, conflict, notFound } from '../utils/errors.js';
 import { dhakaDate, isWeekendDhaka, isoDateOnly } from '../utils/dates.js';
 import * as audit from './audit.service.js';
@@ -38,16 +39,40 @@ export function deriveStatus(installment, today = dhakaDate()) {
   return 'PENDING';
 }
 
+/**
+ * Service-layer replacement for the deferred "installments must total the investment"
+ * constraint. When an investment has installments, their amounts must sum to its total.
+ * Call inside the write transaction, before COMMIT, after any change to installments
+ * or to investments.total_amount.
+ */
+export async function assertInvestmentSchedule(client, investmentId) {
+  const res = await client.query(
+    `select v.total_amount as total,
+            (select count(*) from installments inst where inst.investment_id = v.id) as rows_found,
+            (select coalesce(sum(inst.amount), 0) from installments inst where inst.investment_id = v.id) as sum_amount
+       from investments v where v.id = ?1`,
+    [investmentId],
+  );
+  const row = res.rows[0];
+  if (!row) return;
+  if (row.rows_found > 0 && Number(row.sum_amount) !== Number(row.total)) {
+    throw badRequest(
+      `Installments of this investment must total ${row.total} poisha (currently ${row.sum_amount})`,
+      { sum: Number(row.sum_amount), expected: Number(row.total) },
+    );
+  }
+}
+
 /** Recompute + persist the derived status when it differs (no-op otherwise). */
 export async function syncStatus(client, installmentId, { today = dhakaDate() } = {}) {
-  const res = await client.query('select * from installments where id = $1 for update', [installmentId]);
+  const res = await client.query('select * from installments where id = ?1 ', [installmentId]);
   const row = res.rows[0];
   if (!row) throw notFound('Installment not found');
   const derived = deriveStatus(row, today);
   if (derived === row.status) return row;
   const paidAt = derived === 'PAID' ? row.paid_at ?? new Date() : null;
   const updated = await client.query(
-    'update installments set status = $2, paid_at = $3 where id = $1 returning *',
+    `update installments set status = ?2, paid_at = ?3, updated_at = ${NOW} where id = ?1 returning *`,
     [installmentId, derived, paidAt],
   );
   return updated.rows[0];
@@ -59,21 +84,21 @@ export async function syncStatus(client, installmentId, { today = dhakaDate() } 
 const INSTALLMENT_SELECT = `
   select inst.*, v.investor_id, v.total_amount as investment_total, v.installment_count, v.status as investment_status,
          i.name as investor_name, i.mobile as investor_mobile, i.status as investor_status,
-         greatest(inst.amount - inst.amount_paid, 0)::bigint as outstanding,
-         (inst.pay_token_hash is not null and inst.token_expires_at > now()
+         max(inst.amount - inst.amount_paid, 0) as outstanding,
+         (inst.pay_token_hash is not null and inst.token_expires_at > ${NOW}
            and inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE')) as pay_link_active
     from installments inst
     join investments v on v.id = inst.investment_id
     join investors i on i.id = v.investor_id`;
 
 export async function getInstallment(id, client = undefined) {
-  const res = await query(`${INSTALLMENT_SELECT} where inst.id = $1`, [id], client);
+  const res = await query(`${INSTALLMENT_SELECT} where inst.id = ?1`, [id], client);
   if (!res.rows[0]) throw notFound('Installment not found');
   return res.rows[0];
 }
 
 export async function getInstallmentByToken(tokenHash, client = undefined) {
-  const res = await query(`${INSTALLMENT_SELECT} where inst.pay_token_hash = $1`, [tokenHash], client);
+  const res = await query(`${INSTALLMENT_SELECT} where inst.pay_token_hash = ?1`, [tokenHash], client);
   return res.rows[0] ?? null;
 }
 
@@ -82,13 +107,15 @@ export async function listInstallments(filters = {}, client = undefined) {
   const params = [];
   const push = (v) => {
     params.push(v);
-    return `$${params.length}`;
+    return `?${params.length}`;
   };
   if (filters.investmentId) where.push(`inst.investment_id = ${push(filters.investmentId)}`);
   if (filters.investorId) where.push(`v.investor_id = ${push(filters.investorId)}`);
   if (filters.status) {
     const list = Array.isArray(filters.status) ? filters.status : [filters.status];
-    where.push(`inst.status = any(${push(list)})`);
+    const statusIn = inClause('inst.status', list, params.length + 1);
+    where.push(statusIn.sql);
+    params.push(...statusIn.args);
   }
   if (filters.openOnly) where.push(`inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE')`);
   if (filters.dueFrom) where.push(`inst.due_date >= ${push(filters.dueFrom)}`);
@@ -96,7 +123,7 @@ export async function listInstallments(filters = {}, client = undefined) {
   if (filters.overdueAsOf) where.push(`inst.due_date < ${push(filters.overdueAsOf)} and inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE')`);
   if (filters.search) {
     const term = `%${String(filters.search).toLowerCase().trim()}%`;
-    where.push(`(i.search_text like ${push(term)} or cast(inst.serial as text) = $${params.length})`);
+    where.push(`(i.search_text like ${push(term)} or cast(inst.serial as text) = ?${params.length})`);
   }
   const whereSql = where.length ? `where ${where.join(' and ')}` : '';
   const sortColumn = SORTABLE.includes(filters.sort) ? filters.sort : 'due_date';
@@ -104,13 +131,15 @@ export async function listInstallments(filters = {}, client = undefined) {
   const limit = Math.min(Number(filters.limit) || 25, 200);
   const offset = Math.max(Number(filters.offset) || 0, 0);
 
+  // PostgreSQL sorted NULLs last for ASC and first for DESC; keep that for nullable columns (paid_at).
+  const nulls = dir === 'asc' ? 'last' : 'first';
   const rows = await query(
-    `${INSTALLMENT_SELECT} ${whereSql} order by inst.${sortColumn} ${dir}, inst.id asc limit ${push(limit)} offset ${push(offset)}`,
+    `${INSTALLMENT_SELECT} ${whereSql} order by inst.${sortColumn} ${dir} nulls ${nulls}, inst.id asc limit ${push(limit)} offset ${push(offset)}`,
     params,
     client,
   );
   const total = await query(
-    `select count(*)::int as count from installments inst
+    `select count(*) as count from installments inst
        join investments v on v.id = inst.investment_id
        join investors i on i.id = v.investor_id ${whereSql}`,
     params.slice(0, params.length - 2),
@@ -130,18 +159,18 @@ export async function listInstallments(filters = {}, client = undefined) {
  */
 export async function updateInstallment(id, changes, actor, req) {
   return withTransaction(async (client) => {
-    const current = await client.query(`${INSTALLMENT_SELECT} where inst.id = $1 for update`, [id]);
+    const current = await client.query(`${INSTALLMENT_SELECT} where inst.id = ?1 `, [id]);
     const before = current.rows[0];
     if (!before) throw notFound('Installment not found');
     if (before.status === 'PAID') throw conflict('A paid installment cannot be edited');
     if (before.status === 'CANCELLED') throw conflict('A cancelled installment cannot be edited');
 
     const sets = [];
-    // $1 is the row id in the WHERE clause; SET params start at $2.
+    // ?1 is the row id in the WHERE clause; SET params start at ?2.
     const params = [id];
     const push = (v) => {
       params.push(v);
-      return `$${params.length}`;
+      return `?${params.length}`;
     };
     if (changes.amount !== undefined) {
       if (Number(changes.amount) < Number(before.amount_paid)) {
@@ -151,16 +180,17 @@ export async function updateInstallment(id, changes, actor, req) {
     }
     if (changes.due_date !== undefined) sets.push(`due_date = ${push(changes.due_date)}`);
     if (sets.length === 0) return before;
+    sets.push(`updated_at = ${NOW}`);
 
-    const res = await client.query(`update installments set ${sets.join(', ')} where id = $1 returning *`, params);
+    const res = await client.query(`update installments set ${sets.join(', ')} where id = ?1 returning *`, params);
     const after = res.rows[0];
 
     // Sum invariant (explicit check gives a friendly message before the DB trigger fires).
     const sums = await client.query(
-      `select coalesce(sum(amount),0)::bigint as total from installments where investment_id = $1`,
+      `select coalesce(sum(amount),0) as total from installments where investment_id = ?1`,
       [before.investment_id],
     );
-    const inv = await client.query('select total_amount from investments where id = $1', [before.investment_id]);
+    const inv = await client.query('select total_amount from investments where id = ?1', [before.investment_id]);
     if (Number(sums.rows[0].total) !== Number(inv.rows[0].total_amount)) {
       throw badRequest(
         `Installment amounts must keep adding up to the investment total. Current sum is ${sums.rows[0].total} poisha, expected ${inv.rows[0].total_amount}.`,
@@ -189,7 +219,7 @@ export async function updateInstallment(id, changes, actor, req) {
 export async function changeInstallmentState(id, { status, reason }, actor, req) {
   if (!['WAIVED', 'CANCELLED', 'PENDING'].includes(status)) throw badRequest('Unsupported target status');
   return withTransaction(async (client) => {
-    const current = await client.query('select * from installments where id = $1 for update', [id]);
+    const current = await client.query('select * from installments where id = ?1 ', [id]);
     const before = current.rows[0];
     if (!before) throw notFound('Installment not found');
     if (before.status === 'PAID' && status !== 'WAIVED') throw conflict('A paid installment can only be waived');
@@ -197,9 +227,9 @@ export async function changeInstallmentState(id, { status, reason }, actor, req)
 
     const updated = await client.query(
       `update installments
-          set status = $2, status_reason = $3, status_changed_by = $4, status_changed_at = now(),
-              paid_at = case when $5::boolean then coalesce(paid_at, now()) else null end
-        where id = $1 returning *`,
+          set status = ?2, status_reason = ?3, status_changed_by = ?4, status_changed_at = ${NOW}, updated_at = ${NOW},
+              paid_at = case when ?5 then coalesce(paid_at, ${NOW}) else null end
+        where id = ?1 returning *`,
       [id, status, reason ?? null, actor?.id ?? null, status === 'PAID'],
     );
 
@@ -234,8 +264,8 @@ export async function markOverdue({ asOf = dhakaDate(), actor = null, req = null
   return withTransaction(async (client) => {
     const res = await client.query(
       `update installments
-          set status = 'OVERDUE', status_changed_at = now()
-        where due_date < $1 and status in ('PENDING', 'PARTIALLY_PAID')
+          set status = 'OVERDUE', status_changed_at = ${NOW}
+        where due_date < ?1 and status in ('PENDING', 'PARTIALLY_PAID')
         returning id, investment_id, serial, amount, due_date, status`,
       [asOf],
     );
@@ -258,28 +288,28 @@ export async function markOverdue({ asOf = dhakaDate(), actor = null, req = null
 
 export async function refreshInvestmentStatus(client, investmentId) {
   const res = await client.query(
-    `select count(*)::int as open_count,
-            count(*) filter (where status = 'PAID')::int as paid_count,
-            count(*)::int as total_count
+    `select count(*) as open_count,
+            count(*) filter (where status = 'PAID') as paid_count,
+            count(*) as total_count
        from installments
-      where investment_id = $1 and status in ('PENDING','PARTIALLY_PAID','OVERDUE')`,
+      where investment_id = ?1 and status in ('PENDING','PARTIALLY_PAID','OVERDUE')`,
     [investmentId],
   );
   const { open_count: openCount } = res.rows[0];
-  const inv = await client.query('select status from investments where id = $1', [investmentId]);
+  const inv = await client.query('select status from investments where id = ?1', [investmentId]);
   const currentStatus = inv.rows[0]?.status;
   let next = currentStatus;
   if (currentStatus === 'CANCELLED') next = 'CANCELLED';
   else next = openCount === 0 ? 'COMPLETED' : 'ACTIVE';
   if (next !== currentStatus) {
-    await client.query('update investments set status = $2 where id = $1', [investmentId, next]);
+    await client.query(`update investments set status = ?2, updated_at = ${NOW} where id = ?1`, [investmentId, next]);
   }
   return next;
 }
 
 /** Applies a verified payment (poisha) to an installment inside a transaction. */
 export async function applyPayment(client, installmentId, amountPoisha) {
-  const res = await client.query('select * from installments where id = $1 for update', [installmentId]);
+  const res = await client.query('select * from installments where id = ?1 ', [installmentId]);
   const row = res.rows[0];
   if (!row) throw notFound('Installment not found');
   if (row.status === 'CANCELLED') throw conflict('This installment is cancelled');
@@ -294,8 +324,8 @@ export async function applyPayment(client, installmentId, amountPoisha) {
   const status = paid >= Number(row.amount) ? 'PAID' : 'PARTIALLY_PAID';
   const updated = await client.query(
     `update installments
-        set amount_paid = $2, status = $3, paid_at = case when $4::boolean then now() else paid_at end
-      where id = $1 returning *`,
+        set amount_paid = ?2, status = ?3, updated_at = ${NOW}, paid_at = case when ?4 then ${NOW} else paid_at end
+      where id = ?1 returning *`,
     [installmentId, paid, status, status === 'PAID'],
   );
   await refreshInvestmentStatus(client, row.investment_id);
@@ -308,18 +338,16 @@ export async function applyPayment(client, installmentId, amountPoisha) {
  * untouched; the status is recomputed and the investment status refreshed.
  */
 export async function revertPayment(client, installmentId, amountPoisha) {
-  const res = await client.query('select * from installments where id = $1 for update', [installmentId]);
+  const res = await client.query('select * from installments where id = ?1 ', [installmentId]);
   const row = res.rows[0];
   if (!row) throw notFound('Installment not found');
   const paid = Math.max(0, Number(row.amount_paid) - Number(amountPoisha));
   const status = paid <= 0 ? 'PENDING' : paid >= Number(row.amount) ? 'PAID' : 'PARTIALLY_PAID';
-  // A dedicated boolean parameter: reusing $3 inside the CASE made Postgres
-  // infer conflicting types for it (42P08).
   const updated = await client.query(
     `update installments
-        set amount_paid = $2, status = $3,
-            paid_at = case when $4::boolean then paid_at else null end
-      where id = $1 returning *`,
+        set amount_paid = ?2, status = ?3, updated_at = ${NOW},
+            paid_at = case when ?4 then paid_at else null end
+      where id = ?1 returning *`,
     [installmentId, paid, status, status === 'PAID'],
   );
   await refreshInvestmentStatus(client, row.investment_id);

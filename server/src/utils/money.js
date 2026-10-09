@@ -1,7 +1,7 @@
 /**
  * Money is ALWAYS an integer number of poisha (1 BDT = 100 poisha) in the
  * database, in the API and in the services. Formatting happens in the UI only.
- * BIGINT columns are parsed to JS numbers by db/pool.js; poisha amounts stay far
+ * INTEGER columns are read back as JS numbers by db/values.js; poisha amounts stay far
  * below Number.MAX_SAFE_INTEGER (9e15 poisha = 9e13 BDT = 90 lakh crore BDT).
  */
 

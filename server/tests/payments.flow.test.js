@@ -71,7 +71,8 @@ function callback(anon, token, paymentId, extra = '') {
 
 /** The reconcile job only looks at attempts older than the configured threshold. */
 async function backdatePayment(paymentId, minutes = 30) {
-  await ctx.query(`update payments set created_at = now() - ($2 || ' minutes')::interval where id = $1`, [paymentId, String(minutes)]);
+  const createdAt = new Date(Date.now() - minutes * 60_000).toISOString();
+  await ctx.query('update payments set created_at = ?2 where id = ?1', [paymentId, createdAt]);
 }
 
 describe('payment links', () => {
@@ -81,7 +82,7 @@ describe('payment links', () => {
     assert.match(link.token, /^[A-Za-z0-9_-]{43}$/);
     assert.equal(link.tokenExpiresAt !== null, true);
 
-    const stored = await ctx.query('select pay_token_hash, token_expires_at from installments where id = $1', [installment.id]);
+    const stored = await ctx.query('select pay_token_hash, token_expires_at from installments where id = ?1', [installment.id]);
     assert.equal(stored.rows[0].pay_token_hash, createHash('sha256').update(link.token).digest('hex'));
     assert.ok(new Date(stored.rows[0].token_expires_at).getTime() > Date.now());
 
@@ -131,7 +132,7 @@ describe('payment links', () => {
       (
         await ctx.query(
           `select action, old_value from audit_logs
-             where entity = 'installment' and entity_id = $1
+             where entity = 'installment' and entity_id = ?1
                and action in ('PAY_LINK_GENERATED', 'PAY_LINK_REGENERATED')
              order by id`,
           [String(installment.id)],
@@ -141,7 +142,7 @@ describe('payment links', () => {
     assert.equal(before.at(-1).action, 'PAY_LINK_REGENERATED', 'replacing a live link is audited as a regeneration');
     assert.ok(before.at(-1).old_value, 'the regeneration records the old token version');
 
-    await ctx.query(`update installments set pay_token_hash = null, token_expires_at = null, token_issued_at = null where id = $1`, [
+    await ctx.query(`update installments set pay_token_hash = null, token_expires_at = null, token_issued_at = null where id = ?1`, [
       installment.id,
     ]);
     const fresh = await accountant.post(`/api/installments/${installment.id}/pay-link`, {});
@@ -152,7 +153,8 @@ describe('payment links', () => {
 
   test('expired links are refused for viewing and for starting a payment', async () => {
     const { installment, link } = await createPayable();
-    await ctx.query(`update installments set token_expires_at = now() - interval '1 day' where id = $1`, [installment.id]);
+    const expiredAt = new Date(Date.now() - 86_400_000).toISOString();
+    await ctx.query('update installments set token_expires_at = ?2 where id = ?1', [installment.id, expiredAt]);
 
     const anon = makeClient(ctx.baseUrl);
     const view = await anon.get(`/api/public/pay/${link.token}`);
@@ -162,7 +164,7 @@ describe('payment links', () => {
     const start = await anon.post(`/api/public/pay/${link.token}/start`);
     assert.equal(start.status, 410);
 
-    const audit = await ctx.query(`select count(*)::int as count from audit_logs where action = 'PAY_LINK_INVALID'`);
+    const audit = await ctx.query(`select count(*) as count from audit_logs where action = 'PAY_LINK_INVALID'`);
     assert.ok(audit.rows[0].count >= 1, 'rejected link accesses are audited');
   });
 
@@ -185,7 +187,7 @@ describe('gateway payment flow (mock gateway)', () => {
     assert.match(redirectUrl, /\/pay\/callback\?/);
     assert.ok(paymentId);
 
-    const initiated = await ctx.query('select status, method, gateway, invoice_number from payments where gateway_payment_id = $1', [paymentId]);
+    const initiated = await ctx.query('select status, method, gateway, invoice_number from payments where gateway_payment_id = ?1', [paymentId]);
     assert.equal(initiated.rows[0].status, 'INITIATED');
     assert.equal(initiated.rows[0].method, 'BKASH');
     assert.equal(initiated.rows[0].gateway, 'BKASH');
@@ -194,11 +196,11 @@ describe('gateway payment flow (mock gateway)', () => {
     assert.equal(settled.status, 303);
     assert.match(settled.location, /state=success/);
 
-    const payment = await ctx.query('select id, status, trx_id from payments where gateway_payment_id = $1', [paymentId]);
+    const payment = await ctx.query('select id, status, trx_id from payments where gateway_payment_id = ?1', [paymentId]);
     assert.equal(payment.rows[0].status, 'SUCCESS');
     assert.match(payment.rows[0].trx_id, /^MOCKTRX/);
 
-    const after = await ctx.query('select status, paid_at, amount_paid from installments where id = $1', [installment.id]);
+    const after = await ctx.query('select status, paid_at, amount_paid from installments where id = ?1', [installment.id]);
     assert.equal(after.rows[0].status, 'PAID');
     assert.ok(after.rows[0].paid_at);
     assert.equal(Number(after.rows[0].amount_paid), installment.amount);
@@ -222,7 +224,7 @@ describe('gateway payment flow (mock gateway)', () => {
       'a payment confirmation SMS must be sent',
     );
 
-    const audit = await ctx.query(`select action from audit_logs where entity = 'payment' and entity_id = $1 order by id`, [
+    const audit = await ctx.query(`select action from audit_logs where entity = 'payment' and entity_id = ?1 order by id`, [
       String(payment.rows[0].id),
     ]);
     const actions = audit.rows.map((row) => row.action);
@@ -240,11 +242,11 @@ describe('gateway payment flow (mock gateway)', () => {
     assert.equal(second.status, 303);
     assert.equal(second.location, first.location);
 
-    const rows = await ctx.query('select status from payments where installment_id = $1', [installment.id]);
+    const rows = await ctx.query('select status from payments where installment_id = ?1', [installment.id]);
     assert.equal(rows.rows.length, 1, 'a replayed callback must not create a second payment row');
     assert.equal(rows.rows[0].status, 'SUCCESS');
 
-    const paid = await ctx.query('select amount_paid from installments where id = $1', [installment.id]);
+    const paid = await ctx.query('select amount_paid from installments where id = ?1', [installment.id]);
     assert.equal(Number(paid.rows[0].amount_paid), installment.amount, 'the installment must not be credited twice');
   });
 
@@ -257,16 +259,16 @@ describe('gateway payment flow (mock gateway)', () => {
       assert.equal(tampered.status, 303);
       assert.match(tampered.location, /state=failed/);
 
-      const payment = await ctx.query('select id, status, trx_id from payments where gateway_payment_id = $1', [paymentId]);
+      const payment = await ctx.query('select id, status, trx_id from payments where gateway_payment_id = ?1', [paymentId]);
       assert.equal(payment.rows[0].status, 'FAILED');
       assert.notEqual(payment.rows[0].trx_id, 'FAKE123');
 
-      const inst = await ctx.query('select status, amount_paid from installments where id = $1', [installment.id]);
+      const inst = await ctx.query('select status, amount_paid from installments where id = ?1', [installment.id]);
       assert.equal(inst.rows[0].status, 'PENDING');
       assert.equal(Number(inst.rows[0].amount_paid), 0);
 
       const audit = await ctx.query(
-        `select count(*)::int as count from audit_logs where action = 'PAYMENT_FAILED' and entity_id = $1`,
+        `select count(*) as count from audit_logs where action = 'PAYMENT_FAILED' and entity_id = ?1`,
         [String(payment.rows[0].id)],
       );
       assert.equal(audit.rows[0].count, 1);
@@ -283,11 +285,11 @@ describe('gateway payment flow (mock gateway)', () => {
       assert.equal(result.status, 303);
       assert.match(result.location, /state=failed/);
 
-      const payment = await ctx.query('select id, status, failure_reason from payments where gateway_payment_id = $1', [paymentId]);
+      const payment = await ctx.query('select id, status, failure_reason from payments where gateway_payment_id = ?1', [paymentId]);
       assert.equal(payment.rows[0].status, 'FAILED');
       assert.match(payment.rows[0].failure_reason, /Amount mismatch/i);
 
-      const inst = await ctx.query('select status, amount_paid from installments where id = $1', [installment.id]);
+      const inst = await ctx.query('select status, amount_paid from installments where id = ?1', [installment.id]);
       assert.equal(inst.rows[0].status, 'PENDING');
       assert.equal(Number(inst.rows[0].amount_paid), 0);
     });
@@ -309,18 +311,18 @@ describe('gateway payment flow (mock gateway)', () => {
       const settledB = await callback(b.anon, second.link.token, b.paymentId);
       assert.match(settledB.location, /state=failed/);
 
-      const paymentB = await ctx.query('select id, status, failure_reason from payments where gateway_payment_id = $1', [b.paymentId]);
+      const paymentB = await ctx.query('select id, status, failure_reason from payments where gateway_payment_id = ?1', [b.paymentId]);
       assert.equal(paymentB.rows[0].status, 'FAILED');
       assert.match(paymentB.rows[0].failure_reason, /Duplicate trxId/);
 
-      const instB = await ctx.query('select status from installments where id = $1', [second.installment.id]);
+      const instB = await ctx.query('select status from installments where id = ?1', [second.installment.id]);
       assert.equal(instB.rows[0].status, 'PENDING');
 
-      const holders = await ctx.query('select count(*)::int as count from payments where trx_id = $1', [duplicateTrx]);
+      const holders = await ctx.query('select count(*) as count from payments where trx_id = ?1', [duplicateTrx]);
       assert.equal(holders.rows[0].count, 1, 'only the first payment may hold the trxId');
 
       const audit = await ctx.query(
-        `select count(*)::int as count from audit_logs where action = 'PAYMENT_FAILED' and entity_id = $1`,
+        `select count(*) as count from audit_logs where action = 'PAYMENT_FAILED' and entity_id = ?1`,
         [String(paymentB.rows[0].id)],
       );
       assert.equal(audit.rows[0].count, 1, 'the duplicate attempt must be recorded as failed');
@@ -331,7 +333,7 @@ describe('gateway payment flow (mock gateway)', () => {
       ctx.query(
         `insert into payments (installment_id, gateway, trx_id, invoice_number, amount, status, method, gateway_status)
          select installment_id, gateway, trx_id, invoice_number, amount, 'SUCCESS', method, gateway_status
-           from payments where trx_id = $1`,
+           from payments where trx_id = ?1`,
         [duplicateTrx],
       ),
       /already exists|duplicate key|unique/i,
@@ -356,9 +358,9 @@ describe('gateway payment flow (mock gateway)', () => {
       const result = await callback(anon, link.token, paymentId);
       assert.match(result.location, /state=cancelled/);
 
-      const payment = await ctx.query('select status from payments where gateway_payment_id = $1', [paymentId]);
+      const payment = await ctx.query('select status from payments where gateway_payment_id = ?1', [paymentId]);
       assert.equal(payment.rows[0].status, 'CANCELLED');
-      const inst = await ctx.query('select status from installments where id = $1', [installment.id]);
+      const inst = await ctx.query('select status from installments where id = ?1', [installment.id]);
       assert.equal(inst.rows[0].status, 'PENDING');
     });
 
@@ -379,7 +381,7 @@ describe('gateway payment flow (mock gateway)', () => {
     await withOutcome('pending', async () => {
       const { installment, link } = await createPayable();
       const { paymentId } = await startPayment(link.token);
-      const row = await ctx.query('select id, status from payments where gateway_payment_id = $1', [paymentId]);
+      const row = await ctx.query('select id, status from payments where gateway_payment_id = ?1', [paymentId]);
       await backdatePayment(row.rows[0].id);
 
       const { runJobByName } = await import('../src/jobs/scheduler.js');
@@ -387,9 +389,9 @@ describe('gateway payment flow (mock gateway)', () => {
       assert.equal(result.ok, true);
       assert.ok(result.result.detail.checked >= 1);
 
-      const after = await ctx.query('select status from payments where gateway_payment_id = $1', [paymentId]);
+      const after = await ctx.query('select status from payments where gateway_payment_id = ?1', [paymentId]);
       assert.ok(['INITIATED', 'PENDING'].includes(after.rows[0].status));
-      const inst = await ctx.query('select status from installments where id = $1', [installment.id]);
+      const inst = await ctx.query('select status from installments where id = ?1', [installment.id]);
       assert.equal(inst.rows[0].status, 'PENDING');
     });
 
@@ -397,7 +399,7 @@ describe('gateway payment flow (mock gateway)', () => {
     await withOutcome('success', async () => {
       const { installment, link } = await createPayable();
       const { paymentId } = await startPayment(link.token);
-      const row = await ctx.query('select id from payments where gateway_payment_id = $1', [paymentId]);
+      const row = await ctx.query('select id from payments where gateway_payment_id = ?1', [paymentId]);
       ctx.gateway.completeAtGateway(paymentId);
       await backdatePayment(row.rows[0].id);
 
@@ -405,10 +407,10 @@ describe('gateway payment flow (mock gateway)', () => {
       const result = await runJobByName('payments.reconcile');
       assert.equal(result.ok, true);
 
-      const payment = await ctx.query('select status, trx_id from payments where gateway_payment_id = $1', [paymentId]);
+      const payment = await ctx.query('select status, trx_id from payments where gateway_payment_id = ?1', [paymentId]);
       assert.equal(payment.rows[0].status, 'SUCCESS');
       assert.ok(payment.rows[0].trx_id);
-      const inst = await ctx.query('select status, paid_at, amount_paid from installments where id = $1', [installment.id]);
+      const inst = await ctx.query('select status, paid_at, amount_paid from installments where id = ?1', [installment.id]);
       assert.equal(inst.rows[0].status, 'PAID');
       assert.ok(inst.rows[0].paid_at);
       assert.equal(Number(inst.rows[0].amount_paid), installment.amount);
@@ -443,12 +445,12 @@ describe('manual payments', () => {
     assert.equal(created.data.payment.method, 'CASH');
     assert.match(created.data.receiptNumber, /^RCPT-\d{4}-\d{6}$/);
 
-    const inst = await ctx.query('select status, paid_at from installments where id = $1', [installment.id]);
+    const inst = await ctx.query('select status, paid_at from installments where id = ?1', [installment.id]);
     assert.equal(inst.rows[0].status, 'PAID');
     assert.ok(inst.rows[0].paid_at);
 
     const audit = await ctx.query(
-      `select count(*)::int as count from audit_logs where action = 'PAYMENT_MANUAL_RECORDED' and entity_id = $1`,
+      `select count(*) as count from audit_logs where action = 'PAYMENT_MANUAL_RECORDED' and entity_id = ?1`,
       [String(created.data.payment.id)],
     );
     assert.equal(audit.rows[0].count, 1);
@@ -508,7 +510,7 @@ describe('manual payments', () => {
     assert.equal(created.status, 201);
     assert.equal(created.data.payment.status, 'SUCCESS');
 
-    const inst = await ctx.query('select status, amount_paid from installments where id = $1', [installment.id]);
+    const inst = await ctx.query('select status, amount_paid from installments where id = ?1', [installment.id]);
     assert.equal(inst.rows[0].status, 'PARTIALLY_PAID');
     assert.equal(Number(inst.rows[0].amount_paid), half);
   });
@@ -542,7 +544,7 @@ describe('manual payments', () => {
     assert.equal(receiptJson.data.manualReference, 'BANK-TRF-9001');
 
     const audit = await ctx.query(
-      `select count(*)::int as count from audit_logs where action = 'RECEIPT_VIEWED' and entity_id = $1`,
+      `select count(*) as count from audit_logs where action = 'RECEIPT_VIEWED' and entity_id = ?1`,
       [created.data.receiptNumber],
     );
     assert.ok(audit.rows[0].count >= 1);
@@ -551,12 +553,12 @@ describe('manual payments', () => {
     assert.equal(cancelled.status, 200);
     assert.equal(cancelled.data.payment.status, 'CANCELLED');
 
-    const inst = await ctx.query('select status, amount_paid from installments where id = $1', [installment.id]);
+    const inst = await ctx.query('select status, amount_paid from installments where id = ?1', [installment.id]);
     assert.equal(inst.rows[0].status, 'PENDING');
     assert.equal(Number(inst.rows[0].amount_paid), 0);
 
     const cancelAudit = await ctx.query(
-      `select count(*)::int as count from audit_logs where action = 'PAYMENT_CANCELLED' and entity_id = $1`,
+      `select count(*) as count from audit_logs where action = 'PAYMENT_CANCELLED' and entity_id = ?1`,
       [String(paymentId)],
     );
     assert.equal(cancelAudit.rows[0].count, 1);
@@ -582,7 +584,7 @@ describe('SMS', () => {
     assert.equal(captured.messageType, 'PAYMENT_LINK');
     assert.equal(Number(captured.installmentId), Number(installment.id));
 
-    const audit = await ctx.query(`select count(*)::int as count from audit_logs where action = 'SMS_SENT'`);
+    const audit = await ctx.query(`select count(*) as count from audit_logs where action = 'SMS_SENT'`);
     assert.ok(audit.rows[0].count >= 1);
   });
 
@@ -614,7 +616,7 @@ describe('SMS', () => {
     assert.equal(log.rows[0].provider_status, 'FAILED');
     assert.match(log.rows[0].error, /carrier outage/);
 
-    const audit = await ctx.query(`select count(*)::int as count from audit_logs where action = 'SMS_FAILED'`);
+    const audit = await ctx.query(`select count(*) as count from audit_logs where action = 'SMS_FAILED'`);
     assert.ok(audit.rows[0].count >= 1);
   });
 });
@@ -670,7 +672,7 @@ describe('dashboard and reports', () => {
     assert.equal(today.status, 200);
     assert.ok(typeof today.data.todayCollection === 'number');
 
-    const audit = await ctx.query(`select count(*)::int as count from audit_logs where action = 'REPORT_EXPORTED'`);
+    const audit = await ctx.query(`select count(*) as count from audit_logs where action = 'REPORT_EXPORTED'`);
     assert.ok(audit.rows[0].count >= 1);
   });
 
@@ -711,7 +713,7 @@ describe('jobs', () => {
   test('reminders send once per window and respect the anti-spam guard', async () => {
     const { installment, investment } = await createPayable({ name: 'Reminder Target' });
     const { dhakaDate, addDays } = await import('../src/utils/dates.js');
-    await ctx.query('update installments set due_date = $1 where id = $2', [addDays(dhakaDate(), 3), installment.id]);
+    await ctx.query('update installments set due_date = ?1 where id = ?2', [addDays(dhakaDate(), 3), installment.id]);
 
     const { runJobByName } = await import('../src/jobs/scheduler.js');
     const first = await runJobByName('reminders.sms');
@@ -723,7 +725,7 @@ describe('jobs', () => {
     );
     assert.equal(sent.length, 1);
 
-    const reminded = await ctx.query('select last_reminded_at, reminder_count from installments where id = $1', [installment.id]);
+    const reminded = await ctx.query('select last_reminded_at, reminder_count from installments where id = ?1', [installment.id]);
     assert.ok(reminded.rows[0].last_reminded_at);
     assert.ok(Number(reminded.rows[0].reminder_count) >= 1);
 
@@ -734,7 +736,7 @@ describe('jobs', () => {
     );
     assert.equal(again.length, 1, 'the same installment must not be reminded twice inside the throttle window');
 
-    const log = await ctx.query(`select count(*)::int as count from sms_logs where installment_id = $1 and message_type = 'DUE_REMINDER'`, [
+    const log = await ctx.query(`select count(*) as count from sms_logs where installment_id = ?1 and message_type = 'DUE_REMINDER'`, [
       installment.id,
     ]);
     assert.equal(log.rows[0].count, 1);

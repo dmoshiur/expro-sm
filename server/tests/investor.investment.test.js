@@ -35,7 +35,7 @@ describe('investors', () => {
     assert.equal(investor.mobile, '01714141414');
     assert.equal(investor.nid_encrypted, undefined);
 
-    const raw = await ctx.query('select nid_encrypted, nid_hash, nid_last4 from investors where id = $1', [investor.id]);
+    const raw = await ctx.query('select nid_encrypted, nid_hash, nid_last4 from investors where id = ?1', [investor.id]);
     assert.match(raw.rows[0].nid_encrypted, /^v1\./);
     assert.ok(!raw.rows[0].nid_encrypted.includes('1990123456789'), 'the NID must not be stored in clear text');
     assert.equal(raw.rows[0].nid_hash.length, 64);
@@ -46,7 +46,7 @@ describe('investors', () => {
     assert.equal(reveal.data.nid, '1990123456789');
 
     const auditRow = await ctx.query(
-      `select count(*)::int as count from audit_logs where entity = 'investor' and entity_id = $1 and action = 'INVESTOR_NID_VIEWED'`,
+      `select count(*) as count from audit_logs where entity = 'investor' and entity_id = ?1 and action = 'INVESTOR_NID_VIEWED'`,
       [String(investor.id)],
     );
     assert.equal(auditRow.rows[0].count, 1, 'revealing an NID must be audited');
@@ -112,24 +112,24 @@ describe('investors', () => {
     await assert.rejects(
       ctx.query(
         `insert into nominees (investor_id, name, relation, mobile, share_percent)
-         select $1, 'Extra ' || g, 'Child', $2, 1 from generate_series(1, 2) g`,
-        [investor.id, nextMobile(24)],
+         values (?1, 'Extra 1', 'Child', ?2, 1), (?1, 'Extra 2', 'Child', ?3, 1)`,
+        [investor.id, nextMobile(24), nextMobile(25)],
       ),
       /at most 3 nominees/,
     );
 
     await assert.rejects(
-      ctx.query(`update nominees set share_percent = 90 where investor_id = $1`, [investor.id]),
+      ctx.query(`update nominees set share_percent = 90 where investor_id = ?1`, [investor.id]),
       /must total 100/,
     );
 
     // Deleting all nominees must also be allowed (deferred check)
-    await ctx.query('delete from nominees where investor_id = $1', [investor.id]);
-    const after = await ctx.query('select count(*)::int as count from nominees where investor_id = $1', [investor.id]);
+    await ctx.query('delete from nominees where investor_id = ?1', [investor.id]);
+    const after = await ctx.query('select count(*) as count from nominees where investor_id = ?1', [investor.id]);
     assert.equal(after.rows[0].count, 0);
 
     const auditRow = await ctx.query(
-      `select count(*)::int as count from audit_logs where action = 'NOMINEES_REPLACED' and entity_id = $1`,
+      `select count(*) as count from audit_logs where action = 'NOMINEES_REPLACED' and entity_id = ?1`,
       [String(investor.id)],
     );
     assert.ok(auditRow.rows[0].count >= 1, 'nominee replacement must be audited with old + new values');
@@ -165,7 +165,7 @@ describe('investors', () => {
     const uploaded = await admin.upload(`/api/investors/${investor.id}/nid-scan`, scan, 'application/pdf');
     assert.equal(uploaded.status, 200);
 
-    const stored = await ctx.query('select nid_scan from investors where id = $1', [investor.id]);
+    const stored = await ctx.query('select nid_scan from investors where id = ?1', [investor.id]);
     assert.ok(Buffer.isBuffer(stored.rows[0].nid_scan));
     assert.ok(!stored.rows[0].nid_scan.includes(Buffer.from('fake pdf body')), 'the scan must be encrypted at rest');
 
@@ -251,7 +251,7 @@ describe('investments + installments', () => {
       firstDueDate: '2026-05-31',
     });
     await assert.rejects(
-      ctx.query('update installments set amount = amount + 1 where investment_id = $1 and serial = 1', [investment.id]),
+      ctx.query('update installments set amount = amount + 1 where investment_id = ?1 and serial = 1', [investment.id]),
       /must total/,
     );
   });
@@ -283,14 +283,14 @@ describe('investments + installments', () => {
     assert.equal(adjustTotal.data.investment.total_amount, 120_000);
 
     const after = await ctx.query(
-      'select sum(amount)::bigint as total, count(*)::int as rows from installments where investment_id = $1',
+      'select sum(amount) as total, count(*) as rows from installments where investment_id = ?1',
       [investment.id],
     );
     assert.equal(Number(after.rows[0].total), 120_000);
     assert.equal(after.rows[0].rows, 3);
 
     const auditRow = await ctx.query(
-      `select action, old_value, new_value from audit_logs where action = 'INVESTMENT_TOTAL_CHANGED' and entity_id = $1`,
+      `select action, old_value, new_value from audit_logs where action = 'INVESTMENT_TOTAL_CHANGED' and entity_id = ?1`,
       [String(investment.id)],
     );
     assert.equal(auditRow.rows.length, 1);
@@ -347,7 +347,7 @@ describe('investments + installments', () => {
     assert.equal(reinstated.data.installment.status, 'PENDING');
 
     const actions = await ctx.query(
-      `select action from audit_logs where entity = 'installment' and entity_id in ($1, $2) order by id`,
+      `select action from audit_logs where entity = 'installment' and entity_id in (?1, ?2) order by id`,
       [String(installments[0].id), String(installments[1].id)],
     );
     const seen = actions.rows.map((row) => row.action);
@@ -370,10 +370,10 @@ describe('investments + installments', () => {
     const second = await markOverdue({ asOf: '2030-01-01' });
     assert.equal(second.length, 0, 'a second run must not change anything (idempotent)');
 
-    const rows = await ctx.query('select status from installments where investment_id = $1', [installments[0].investment_id]);
+    const rows = await ctx.query('select status from installments where investment_id = ?1', [installments[0].investment_id]);
     assert.ok(rows.rows.every((row) => row.status === 'OVERDUE'));
 
-    const auditRow = await ctx.query(`select count(*)::int as count from audit_logs where action = 'INSTALLMENT_OVERDUE_MARKED'`);
+    const auditRow = await ctx.query(`select count(*) as count from audit_logs where action = 'INSTALLMENT_OVERDUE_MARKED'`);
     assert.ok(auditRow.rows[0].count >= 1);
   });
 
@@ -410,7 +410,7 @@ describe('investments + installments', () => {
     assert.equal(cancelled.data.investment.status, 'CANCELLED');
 
     const auditRow = await ctx.query(
-      `select count(*)::int as count from audit_logs where action = 'INVESTMENT_STATUS_CHANGED' and entity_id = $1`,
+      `select count(*) as count from audit_logs where action = 'INVESTMENT_STATUS_CHANGED' and entity_id = ?1`,
       [String(investment.id)],
     );
     assert.equal(auditRow.rows[0].count, 1);
@@ -456,7 +456,8 @@ describe('audit log', () => {
   test('audit_logs is append-only at the database level', async () => {
     await assert.rejects(ctx.query(`update audit_logs set action = 'HACKED' where id = (select max(id) from audit_logs)`), /append-only/);
     await assert.rejects(ctx.query(`delete from audit_logs where id = (select max(id) from audit_logs)`), /append-only/);
-    await assert.rejects(ctx.query('truncate audit_logs'), /append-only/);
+    // SQLite has no TRUNCATE (PostgreSQL blocked it with a trigger); the UPDATE and DELETE
+    // guards above cover the append-only rule for every row-level write.
   });
 
   test('filters endpoint exposes actions and entities', async () => {

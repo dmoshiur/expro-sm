@@ -9,7 +9,8 @@
  *  - VIEWER role gets masked PII (see utils/mask.js).
  *  - No hard delete: investors are deactivated / soft-deleted.
  */
-import { query, withTransaction } from '../db/pool.js';
+import { query, withTransaction } from '../db/client.js';
+import { NOW } from '../db/sql.js';
 import { AppError, badRequest, conflict, notFound } from '../utils/errors.js';
 import { maskInvestor, maskMobile, maskNominee, firstNameOnly } from '../utils/mask.js';
 import { decryptField, encryptField, last4, nidHash } from './crypto.service.js';
@@ -27,12 +28,12 @@ export async function listInvestors(filters = {}, client = undefined) {
   const params = [];
   const push = (v) => {
     params.push(v);
-    return `$${params.length}`;
+    return `?${params.length}`;
   };
   if (filters.includeDeleted) where[0] = 'true';
   if (filters.search) {
     const term = `%${String(filters.search).toLowerCase().trim()}%`;
-    where.push(`(i.search_text like ${push(term)} or i.name ilike $${params.length})`);
+    where.push(`(i.search_text like ${push(term)} or i.name like ?${params.length})`);
   }
   if (filters.status) where.push(`i.status = ${push(filters.status)}`);
   if (filters.hasNominees === true) where.push('exists (select 1 from nominees n where n.investor_id = i.id)');
@@ -48,11 +49,11 @@ export async function listInvestors(filters = {}, client = undefined) {
     `select i.id, i.name, i.mobile, i.address, i.status, i.nid_last4, (i.nid_encrypted is not null) as has_nid,
             (i.photo is not null) as has_photo, (i.nid_scan is not null) as has_nid_scan,
             i.created_at, i.updated_at, i.deleted_at,
-            (select count(*)::int from nominees n where n.investor_id = i.id) as nominee_count,
-            (select count(*)::int from investments v where v.investor_id = i.id) as investment_count,
-            (select coalesce(sum(v.total_amount), 0)::bigint from investments v
+            (select count(*) from nominees n where n.investor_id = i.id) as nominee_count,
+            (select count(*) from investments v where v.investor_id = i.id) as investment_count,
+            (select coalesce(sum(v.total_amount), 0) from investments v
               where v.investor_id = i.id and v.status <> 'CANCELLED') as total_invested,
-            (select coalesce(sum(inst.amount_paid), 0)::bigint from installments inst
+            (select coalesce(sum(inst.amount_paid), 0) from installments inst
                join investments v2 on v2.id = inst.investment_id
               where v2.investor_id = i.id) as total_collected
        from investors i
@@ -63,7 +64,7 @@ export async function listInvestors(filters = {}, client = undefined) {
     client,
   );
   const totalRes = await query(
-    `select count(*)::int as count from investors i ${whereSql}`,
+    `select count(*) as count from investors i ${whereSql}`,
     params.slice(0, params.length - 2),
     client,
   );
@@ -73,7 +74,7 @@ export async function listInvestors(filters = {}, client = undefined) {
 export async function getInvestor(id, client = undefined) {
   const res = await query(
     `select i.*, (i.photo is not null) as has_photo, (i.nid_scan is not null) as has_nid_scan
-       from investors i where i.id = $1`,
+       from investors i where i.id = ?1`,
     [id],
     client,
   );
@@ -91,7 +92,7 @@ export async function listNominees(investorId, client = undefined) {
   const res = await query(
     `select id, investor_id, name, relation, mobile, nid_last4, (nid_encrypted is not null) as has_nid,
             share_percent, created_at, updated_at
-       from nominees where investor_id = $1 order by share_percent desc, id asc`,
+       from nominees where investor_id = ?1 order by share_percent desc, id asc`,
     [investorId],
     client,
   );
@@ -100,13 +101,13 @@ export async function listNominees(investorId, client = undefined) {
 
 export async function findByNid(nid, client = undefined) {
   const hash = nidHash(nid);
-  const res = await query('select id, name, mobile, status from investors where nid_hash = $1 and deleted_at is null', [hash], client);
+  const res = await query('select id, name, mobile, status from investors where nid_hash = ?1 and deleted_at is null', [hash], client);
   return res.rows[0] ?? null;
 }
 
 /** Minimal payload for investor-facing pages: first name only. */
 export async function getPublicInvestorName(investorId, client = undefined) {
-  const res = await query('select name from investors where id = $1', [investorId], client);
+  const res = await query('select name from investors where id = ?1', [investorId], client);
   return firstNameOnly(res.rows[0]?.name);
 }
 
@@ -116,7 +117,7 @@ export async function getPublicInvestorName(investorId, client = undefined) {
 export async function createInvestor(data, actor, req) {
   const { name, mobile, nid, address, notes, status = 'ACTIVE', nominees = null } = data;
   return withTransaction(async (client) => {
-    const dupe = await query('select id from investors where mobile = $1 and deleted_at is null', [mobile], client);
+    const dupe = await query('select id from investors where mobile = ?1 and deleted_at is null', [mobile], client);
     if (dupe.rows[0]) throw conflict('An investor with this mobile number already exists');
 
     let nidHashed = null;
@@ -124,7 +125,7 @@ export async function createInvestor(data, actor, req) {
     let nidLast4 = null;
     if (nid) {
       nidHashed = nidHash(nid);
-      const existing = await query('select id from investors where nid_hash = $1 and deleted_at is null', [nidHashed], client);
+      const existing = await query('select id from investors where nid_hash = ?1 and deleted_at is null', [nidHashed], client);
       if (existing.rows[0]) throw conflict('An investor with this NID already exists', { investorId: existing.rows[0].id });
       nidEncrypted = encryptField(nid, { aad: 'investor:nid' });
       nidLast4 = last4(nid);
@@ -132,7 +133,7 @@ export async function createInvestor(data, actor, req) {
 
     const res = await query(
       `insert into investors (name, mobile, nid_encrypted, nid_hash, nid_last4, address, notes, status, created_by, updated_by)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) returning *`,
+       values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) returning *`,
       [name, mobile, nidEncrypted, nidHashed, nidLast4, address ?? null, notes ?? null, status, actor?.id ?? null],
       client,
     );
@@ -160,24 +161,24 @@ export async function createInvestor(data, actor, req) {
 
 export async function updateInvestor(id, changes, actor, req) {
   return withTransaction(async (client) => {
-    const current = await query('select * from investors where id = $1 for update', [id], client);
+    const current = await query('select * from investors where id = ?1 ', [id], client);
     const before = current.rows[0];
     if (!before) throw notFound('Investor not found');
     if (before.deleted_at) throw badRequest('Investor is deleted; restore it before editing');
 
     const sets = [];
-    // $1 is the row id in the WHERE clause; SET params start at $2.
+    // ?1 is the row id in the WHERE clause; SET params start at ?2.
     const params = [id];
     const push = (v) => {
       params.push(v);
-      return `$${params.length}`;
+      return `?${params.length}`;
     };
 
     for (const field of ['name', 'address', 'notes', 'status']) {
       if (changes[field] !== undefined) sets.push(`${field} = ${push(changes[field])}`);
     }
     if (changes.mobile !== undefined && changes.mobile !== before.mobile) {
-      const dupe = await query('select id from investors where mobile = $1 and id <> $2 and deleted_at is null', [changes.mobile, id], client);
+      const dupe = await query('select id from investors where mobile = ?1 and id <> ?2 and deleted_at is null', [changes.mobile, id], client);
       if (dupe.rows[0]) throw conflict('Another investor already uses this mobile number');
       sets.push(`mobile = ${push(changes.mobile)}`);
     }
@@ -189,7 +190,7 @@ export async function updateInvestor(id, changes, actor, req) {
         sets.push('nid_last4 = null');
       } else {
         const hash = nidHash(nid);
-        const dupe = await query('select id from investors where nid_hash = $1 and id <> $2', [hash, id], client);
+        const dupe = await query('select id from investors where nid_hash = ?1 and id <> ?2', [hash, id], client);
         if (dupe.rows[0]) throw conflict('Another investor already uses this NID');
         sets.push(`nid_encrypted = ${push(encryptField(nid, { aad: 'investor:nid' }))}`);
         sets.push(`nid_hash = ${push(hash)}`);
@@ -198,8 +199,9 @@ export async function updateInvestor(id, changes, actor, req) {
     }
     if (sets.length === 0) return { ...before, nominees: await listNominees(id, client) };
     sets.push(`updated_by = ${push(actor?.id ?? null)}`);
+    sets.push(`updated_at = ${NOW}`);
 
-    const res = await query(`update investors set ${sets.join(', ')} where id = $1 returning *`, params, client);
+    const res = await query(`update investors set ${sets.join(', ')} where id = ?1 returning *`, params, client);
     const after = res.rows[0];
     await audit.record(
       {
@@ -221,11 +223,11 @@ export async function updateInvestor(id, changes, actor, req) {
 export async function setInvestorStatus(id, status, { reason } = {}, actor, req) {
   if (!INVESTOR_STATUSES.includes(status)) throw badRequest('Invalid status');
   return withTransaction(async (client) => {
-    const current = await query('select * from investors where id = $1 for update', [id], client);
+    const current = await query('select * from investors where id = ?1 ', [id], client);
     const before = current.rows[0];
     if (!before) throw notFound('Investor not found');
     const res = await query(
-      'update investors set status = $2, updated_by = $3 where id = $1 returning *',
+      `update investors set status = ?2, updated_by = ?3, updated_at = ${NOW} where id = ?1 returning *`,
       [id, status, actor?.id ?? null],
       client,
     );
@@ -248,18 +250,18 @@ export async function setInvestorStatus(id, status, { reason } = {}, actor, req)
 /** Soft delete. Investments are kept for the record (no financial data loss). */
 export async function softDeleteInvestor(id, { reason }, actor, req) {
   return withTransaction(async (client) => {
-    const current = await query('select * from investors where id = $1 for update', [id], client);
+    const current = await query('select * from investors where id = ?1 ', [id], client);
     const before = current.rows[0];
     if (!before) throw notFound('Investor not found');
     if (before.deleted_at) return before;
     const outstanding = await query(
-      `select count(*)::int as count from installments inst
+      `select count(*) as count from installments inst
          join investments v on v.id = inst.investment_id
-        where v.investor_id = $1 and inst.status in ('PENDING', 'PARTIALLY_PAID', 'OVERDUE')`,
+        where v.investor_id = ?1 and inst.status in ('PENDING', 'PARTIALLY_PAID', 'OVERDUE')`,
       [id],
       client,
     );
-    const res = await query('update investors set deleted_at = now(), status = \'INACTIVE\', updated_by = $2 where id = $1 returning *', [
+    const res = await query(`update investors set deleted_at = ${NOW}, status = 'INACTIVE', updated_by = ?2, updated_at = ${NOW} where id = ?1 returning *`, [
       id,
       actor?.id ?? null,
     ], client);
@@ -282,7 +284,7 @@ export async function softDeleteInvestor(id, { reason }, actor, req) {
 
 export async function restoreInvestor(id, actor, req) {
   return withTransaction(async (client) => {
-    const res = await query('update investors set deleted_at = null, status = \'ACTIVE\', updated_by = $2 where id = $1 returning *', [
+    const res = await query(`update investors set deleted_at = null, status = 'ACTIVE', updated_by = ?2, updated_at = ${NOW} where id = ?1 returning *`, [
       id,
       actor?.id ?? null,
     ], client);
@@ -302,16 +304,48 @@ export async function restoreInvestor(id, actor, req) {
 // ---------------------------------------------------------------------------
 // Nominees (max 3, shares must total 100 - also enforced by DB triggers)
 // ---------------------------------------------------------------------------
+/**
+ * Shares are stored as REAL (CHECK > 0 and <= 100) but compared as exact integer
+ * hundredths, so 33.33 + 33.33 + 33.34 totals exactly 10000 without float tolerance.
+ */
+export function shareToHundredths(value) {
+  const n = Number(value);
+  const hundredths = Math.round(n * 100);
+  if (!Number.isFinite(n) || n <= 0 || n > 100 || Math.abs(n * 100 - hundredths) > 1e-6) {
+    throw badRequest('Each nominee share must be above 0 and at most 100, with at most 2 decimal places');
+  }
+  return hundredths;
+}
+
+/**
+ * Service-layer replacement for the PostgreSQL deferred trigger: an investor with
+ * nominees must have at most 3 and shares that total exactly 100%. Call before COMMIT.
+ */
+export async function assertNomineeSharesTotal(client, investorId) {
+  const res = await query(
+    `select count(*) as count, coalesce(sum(cast(round(share_percent * 100) as integer)), 0) as total
+       from nominees where investor_id = ?1`,
+    [investorId],
+    client,
+  );
+  const { count, total } = res.rows[0];
+  if (count === 0) return;
+  if (count > 3) throw badRequest('An investor can have at most 3 nominees');
+  if (total !== 10000) {
+    throw badRequest(`Nominee shares must total 100% (currently ${total / 100}%)`, { total: total / 100 });
+  }
+}
+
 async function insertNominees(client, investorId, nominees) {
   if (nominees.length > 3) throw badRequest('An investor can have at most 3 nominees');
-  const total = nominees.reduce((sum, n) => sum + Number(n.share_percent ?? 0), 0);
-  if (Math.abs(total - 100) > 0.001) {
-    throw badRequest(`Nominee shares must total 100% (currently ${total}%)`, { total });
+  const total = nominees.reduce((sum, n) => sum + shareToHundredths(n.share_percent), 0);
+  if (total !== 10000) {
+    throw badRequest(`Nominee shares must total 100% (currently ${total / 100}%)`, { total: total / 100 });
   }
   for (const n of nominees) {
     await query(
       `insert into nominees (investor_id, name, relation, mobile, nid_encrypted, nid_hash, nid_last4, share_percent)
-       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+       values (?1,?2,?3,?4,?5,?6,?7,?8)`,
       [
         investorId,
         n.name,
@@ -330,12 +364,13 @@ async function insertNominees(client, investorId, nominees) {
 /** Replaces the whole nominee set atomically (SUPER_ADMIN only, audited). */
 export async function replaceNominees(investorId, nominees, actor, req) {
   return withTransaction(async (client) => {
-    const investor = await query('select id, name from investors where id = $1 for update', [investorId], client);
+    const investor = await query('select id, name from investors where id = ?1 ', [investorId], client);
     if (!investor.rows[0]) throw notFound('Investor not found');
     const before = await listNominees(investorId, client);
 
-    await query('delete from nominees where investor_id = $1', [investorId], client);
+    await query('delete from nominees where investor_id = ?1', [investorId], client);
     if (nominees.length > 0) await insertNominees(client, investorId, nominees);
+    await assertNomineeSharesTotal(client, investorId);
 
     const after = await listNominees(investorId, client);
     await audit.record(
@@ -356,27 +391,32 @@ export async function replaceNominees(investorId, nominees, actor, req) {
 
 export async function updateNominee(investorId, nomineeId, changes, actor, req) {
   return withTransaction(async (client) => {
-    const current = await query('select * from nominees where id = $1 and investor_id = $2 for update', [nomineeId, investorId], client);
+    const current = await query('select * from nominees where id = ?1 and investor_id = ?2 ', [nomineeId, investorId], client);
     const before = current.rows[0];
     if (!before) throw notFound('Nominee not found');
     const sets = [];
-    // $1 is the row id in the WHERE clause; SET params start at $2.
-    const params = [id];
+    // ?1 is the nominee id in the WHERE clause; SET params start at ?2.
+    const params = [nomineeId];
     const push = (v) => {
       params.push(v);
-      return `$${params.length}`;
+      return `?${params.length}`;
     };
     for (const field of ['name', 'relation', 'mobile']) {
       if (changes[field] !== undefined) sets.push(`${field} = ${push(changes[field])}`);
     }
-    if (changes.share_percent !== undefined) sets.push(`share_percent = ${push(changes.share_percent)}`);
+    if (changes.share_percent !== undefined) {
+      shareToHundredths(changes.share_percent);
+      sets.push(`share_percent = ${push(Number(changes.share_percent))}`);
+    }
     if (changes.nid !== undefined) {
       sets.push(`nid_encrypted = ${push(changes.nid ? encryptField(changes.nid, { aad: `investor:${investorId}:nominee_nid` }) : null)}`);
       sets.push(`nid_hash = ${push(changes.nid ? nidHash(changes.nid) : null)}`);
       sets.push(`nid_last4 = ${push(changes.nid ? last4(changes.nid) : null)}`);
     }
     if (sets.length === 0) return before;
-    const res = await query(`update nominees set ${sets.join(', ')} where id = $1 returning *`, [...params, nomineeId], client);
+    sets.push(`updated_at = ${NOW}`);
+    const res = await query(`update nominees set ${sets.join(', ')} where id = ?1 returning *`, params, client);
+    if (changes.share_percent !== undefined) await assertNomineeSharesTotal(client, investorId);
     await audit.record(
       {
         action: audit.AUDIT_ACTIONS.NOMINEE_UPDATED,
@@ -427,7 +467,7 @@ export async function revealNomineeNid(investorId, nomineeId, actor, req) {
   const nominees = await listNominees(investorId);
   const nominee = nominees.find((n) => Number(n.id) === Number(nomineeId));
   if (!nominee) throw notFound('Nominee not found');
-  const res = await query('select nid_encrypted from nominees where id = $1', [nomineeId]);
+  const res = await query('select nid_encrypted from nominees where id = ?1', [nomineeId]);
   if (!res.rows[0]?.nid_encrypted) throw notFound('No NID on file for this nominee');
   const nid = decryptField(res.rows[0].nid_encrypted, { aad: `investor:${investorId}:nominee_nid` });
   await audit.record({
@@ -447,8 +487,8 @@ export async function revealNomineeNid(investorId, nomineeId, actor, req) {
 export async function setPhoto(investorId, buffer, actor, req) {
   const file = validateUpload(buffer, { kind: 'photo' });
   const res = await query(
-    `update investors set photo = $2, photo_mime = $3, photo_size = $4, updated_by = $5
-      where id = $1 and deleted_at is null returning id`,
+    `update investors set photo = ?2, photo_mime = ?3, photo_size = ?4, updated_by = ?5
+      where id = ?1 and deleted_at is null returning id`,
     [investorId, file.buffer, file.mime, file.size, actor?.id ?? null],
   );
   if (!res.rows[0]) throw notFound('Investor not found');
@@ -464,7 +504,7 @@ export async function setPhoto(investorId, buffer, actor, req) {
 }
 
 export async function getPhoto(investorId) {
-  const res = await query('select photo, photo_mime, photo_size from investors where id = $1', [investorId]);
+  const res = await query('select photo, photo_mime, photo_size from investors where id = ?1', [investorId]);
   const row = res.rows[0];
   if (!row) throw notFound('Investor not found');
   if (!row.photo) throw notFound('No photo uploaded for this investor');
@@ -473,10 +513,11 @@ export async function getPhoto(investorId) {
 
 export async function setNidScan(investorId, buffer, actor, req) {
   const file = validateUpload(buffer, { kind: 'scan' });
-  const encrypted = encryptScan(file.buffer, investorId);
+  // The ciphertext is an ASCII token; store its bytes so the BLOB column holds binary (same bytes as the bytea column did).
+  const encrypted = Buffer.from(encryptScan(file.buffer, investorId), 'utf8');
   const res = await query(
-    `update investors set nid_scan = $2, nid_scan_mime = $3, nid_scan_size = $4, updated_by = $5
-      where id = $1 and deleted_at is null returning id`,
+    `update investors set nid_scan = ?2, nid_scan_mime = ?3, nid_scan_size = ?4, updated_by = ?5
+      where id = ?1 and deleted_at is null returning id`,
     [investorId, encrypted, file.mime, file.size, actor?.id ?? null],
   );
   if (!res.rows[0]) throw notFound('Investor not found');
@@ -492,7 +533,7 @@ export async function setNidScan(investorId, buffer, actor, req) {
 }
 
 export async function getNidScan(investorId, actor, req) {
-  const res = await query('select nid_scan, nid_scan_mime, nid_scan_size from investors where id = $1', [investorId]);
+  const res = await query('select nid_scan, nid_scan_mime, nid_scan_size from investors where id = ?1', [investorId]);
   const row = res.rows[0];
   if (!row) throw notFound('Investor not found');
   if (!row.nid_scan) throw notFound('No NID scan uploaded for this investor');

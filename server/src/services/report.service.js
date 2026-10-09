@@ -2,8 +2,17 @@
  * Dashboard KPIs and reports. All money in poisha; formatting happens in the UI.
  * Date bucketing is Asia/Dhaka based (see utils/dates.js).
  */
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
 import { addDays, addMonths, dhakaDate, dhakaMonthStart, diffDays, isoDateOnly, monthKeysBetween } from '../utils/dates.js';
+
+// SQLite date helpers. Timestamps are stored as UTC ISO strings, so a calendar day
+// is compared as [dayStart(day), dayStart(day + 1)). Date columns are 'YYYY-MM-DD' text.
+const dayStart = (day) => `${String(day).slice(0, 10)}T00:00:00.000Z`;
+const monthsAgoIso = (months) => {
+  const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() - Number(months));
+  return d.toISOString();
+};
 import { formatBDT } from '../utils/money.js';
 import { maskMobile } from '../utils/mask.js';
 import { toCsv, poishaToDecimalString, csvFilename } from '../utils/csv.js';
@@ -19,48 +28,48 @@ export async function dashboard({ range = '30d' } = {}, client = undefined) {
   const [kpis, byStatus, collections, dueSoon, overdue, recentPayments, recentActivity] = await Promise.all([
     query(
       `select
-         (select coalesce(sum(total_amount),0)::bigint from investments where status <> 'CANCELLED') as total_invested,
-         (select count(*)::int from investments where status <> 'CANCELLED') as investment_count,
-         (select count(*)::int from investors where deleted_at is null) as investor_count,
-         (select count(*)::int from investors where deleted_at is null and status = 'ACTIVE') as active_investor_count,
-         (select coalesce(sum(amount_paid),0)::bigint from installments) as total_collected,
-         (select coalesce(sum(amount),0)::bigint from installments
+         (select coalesce(sum(total_amount),0) from investments where status <> 'CANCELLED') as total_invested,
+         (select count(*) from investments where status <> 'CANCELLED') as investment_count,
+         (select count(*) from investors where deleted_at is null) as investor_count,
+         (select count(*) from investors where deleted_at is null and status = 'ACTIVE') as active_investor_count,
+         (select coalesce(sum(amount_paid),0) from installments) as total_collected,
+         (select coalesce(sum(amount),0) from installments
             where status in ('PENDING','PARTIALLY_PAID','OVERDUE')) as total_outstanding,
-         (select coalesce(sum(p.amount),0)::bigint from payments p
-            where p.status = 'SUCCESS' and p.paid_at >= $1::date and p.paid_at < ($1::date + interval '1 day')) as today_collection,
-         (select count(*)::int from payments p
-            where p.status = 'SUCCESS' and p.paid_at >= $1::date and p.paid_at < ($1::date + interval '1 day')) as today_payment_count,
-         (select coalesce(sum(p.amount),0)::bigint from payments p
-            where p.status = 'SUCCESS' and p.paid_at >= $2::date) as month_collection,
-         (select coalesce(sum(inst.amount - inst.amount_paid),0)::bigint from installments inst
+         (select coalesce(sum(p.amount),0) from payments p
+            where p.status = 'SUCCESS' and p.paid_at >= ?4 and p.paid_at < ?5) as today_collection,
+         (select count(*) from payments p
+            where p.status = 'SUCCESS' and p.paid_at >= ?4 and p.paid_at < ?5) as today_payment_count,
+         (select coalesce(sum(p.amount),0) from payments p
+            where p.status = 'SUCCESS' and p.paid_at >= ?2) as month_collection,
+         (select coalesce(sum(inst.amount - inst.amount_paid),0) from installments inst
             where inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE')
-              and inst.due_date > $1::date and inst.due_date <= $3::date) as upcoming_due_amount,
-         (select count(*)::int from installments inst
+              and inst.due_date > ?1 and inst.due_date <= ?3) as upcoming_due_amount,
+         (select count(*) from installments inst
             where inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE')
-              and inst.due_date > $1::date and inst.due_date <= $3::date) as upcoming_due_count,
-         (select coalesce(sum(inst.amount - inst.amount_paid),0)::bigint from installments inst
-            where inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE') and inst.due_date < $1::date) as overdue_amount,
-         (select count(*)::int from installments inst
-            where inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE') and inst.due_date < $1::date) as overdue_count,
-         (select count(*)::int from installments inst where inst.status = 'PAID') as paid_installment_count,
-         (select count(*)::int from installments inst where inst.status in ('WAIVED','CANCELLED')) as settled_other_count`,
-      [today, monthStart, soonTo],
+              and inst.due_date > ?1 and inst.due_date <= ?3) as upcoming_due_count,
+         (select coalesce(sum(inst.amount - inst.amount_paid),0) from installments inst
+            where inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE') and inst.due_date < ?1) as overdue_amount,
+         (select count(*) from installments inst
+            where inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE') and inst.due_date < ?1) as overdue_count,
+         (select count(*) from installments inst where inst.status = 'PAID') as paid_installment_count,
+         (select count(*) from installments inst where inst.status in ('WAIVED','CANCELLED')) as settled_other_count`,
+      [today, dayStart(monthStart), soonTo, dayStart(today), dayStart(addDays(today, 1))],
       client,
     ),
     query(
-      `select status, count(*)::int as count, coalesce(sum(amount),0)::bigint as amount
+      `select status, count(*) as count, coalesce(sum(amount),0) as amount
          from installments group by status order by status`,
       [],
       client,
     ),
     query(
-      `select to_char(date_trunc('month', p.paid_at), 'YYYY-MM') as month,
-              coalesce(sum(p.amount),0)::bigint as amount,
-              count(*)::int as payments
+      `select strftime('%Y-%m', p.paid_at) as month,
+              coalesce(sum(p.amount),0) as amount,
+              count(*) as payments
          from payments p
-        where p.status = 'SUCCESS' and p.paid_at >= (now() - interval '12 months')
+        where p.status = 'SUCCESS' and p.paid_at >= ?1
         group by 1 order by 1 asc`,
-      [],
+      [monthsAgoIso(12)],
       client,
     ),
     query(
@@ -70,7 +79,7 @@ export async function dashboard({ range = '30d' } = {}, client = undefined) {
          join investments v on v.id = inst.investment_id
          join investors i on i.id = v.investor_id
         where inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE')
-          and inst.due_date between $1::date and $2::date
+          and inst.due_date between ?1 and ?2
         order by inst.due_date asc limit 25`,
       [today, addDays(today, 30)],
       client,
@@ -81,7 +90,7 @@ export async function dashboard({ range = '30d' } = {}, client = undefined) {
          from installments inst
          join investments v on v.id = inst.investment_id
          join investors i on i.id = v.investor_id
-        where inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE') and inst.due_date < $1::date
+        where inst.status in ('PENDING','PARTIALLY_PAID','OVERDUE') and inst.due_date < ?1
         order by inst.due_date asc limit 25`,
       [today],
       client,
@@ -147,16 +156,16 @@ const OPEN = `('PENDING','PARTIALLY_PAID','OVERDUE')`;
 
 export async function collectionByMonth({ months = 12 } = {}, client = undefined) {
   const rows = await query(
-    `select to_char(date_trunc('month', p.paid_at), 'YYYY-MM') as month,
-            coalesce(sum(p.amount),0)::bigint as amount,
-            count(*)::int as payment_count,
-            coalesce(sum(p.amount) filter (where p.method = 'BKASH'), 0)::bigint as bkash_amount,
-            coalesce(sum(p.amount) filter (where p.method = 'CASH'), 0)::bigint as cash_amount,
-            coalesce(sum(p.amount) filter (where p.method = 'BANK'), 0)::bigint as bank_amount
+    `select strftime('%Y-%m', p.paid_at) as month,
+            coalesce(sum(p.amount),0) as amount,
+            count(*) as payment_count,
+            coalesce(sum(p.amount) filter (where p.method = 'BKASH'), 0) as bkash_amount,
+            coalesce(sum(p.amount) filter (where p.method = 'CASH'), 0) as cash_amount,
+            coalesce(sum(p.amount) filter (where p.method = 'BANK'), 0) as bank_amount
        from payments p
-      where p.status = 'SUCCESS' and p.paid_at >= (now() - ($1 || ' months')::interval)
+      where p.status = 'SUCCESS' and p.paid_at >= ?1
       group by 1 order by 1 asc`,
-    [String(months)],
+    [monthsAgoIso(Number(months))],
     client,
   );
   const filled = fillMonths(rows.rows, Number(months));
@@ -183,13 +192,13 @@ function fillMonths(rows, months) {
 
 export async function dueReport({ from, to, status = null, investorId = null, limit = 500 } = {}, client = undefined) {
   const where = [`inst.status in ${OPEN}`];
-  // $1 is the "today" anchor used in the select list, so filter params must
-  // start at $2 (the previous version reused $1 for `from`, which made Postgres
+  // ?1 is the "today" anchor used in the select list, so filter params must
+  // start at ?2 (the previous version reused ?1 for `from`, which made Postgres
   // infer a date where the LIMIT expected a bigint).
   const params = [dhakaDate()];
   const push = (v) => {
     params.push(v);
-    return `$${params.length}`;
+    return `?${params.length}`;
   };
   if (from) where.push(`inst.due_date >= ${push(from)}`);
   if (to) where.push(`inst.due_date <= ${push(to)}`);
@@ -199,7 +208,7 @@ export async function dueReport({ from, to, status = null, investorId = null, li
     `select inst.id, inst.serial, inst.amount, inst.amount_paid, (inst.amount - inst.amount_paid) as outstanding,
             inst.due_date, inst.status, v.id as investment_id, v.total_amount as investment_total,
             i.id as investor_id, i.name as investor_name, i.mobile as investor_mobile,
-            ($1::date - inst.due_date) as days_from_today
+            CAST(round(julianday(?1) - julianday(inst.due_date)) AS INTEGER) as days_from_today
        from installments inst
        join investments v on v.id = inst.investment_id
        join investors i on i.id = v.investor_id
@@ -224,11 +233,11 @@ export async function overdueReport({ asOf = null, limit = 500 } = {}, client = 
     `select inst.id, inst.serial, inst.amount, inst.amount_paid, (inst.amount - inst.amount_paid) as outstanding,
             inst.due_date, inst.status, v.id as investment_id,
             i.id as investor_id, i.name as investor_name, i.mobile as investor_mobile,
-            ($1::date - inst.due_date) as days_overdue
+            CAST(round(julianday(?1) - julianday(inst.due_date)) AS INTEGER) as days_overdue
        from installments inst
        join investments v on v.id = inst.investment_id
        join investors i on i.id = v.investor_id
-      where inst.status in ${OPEN} and inst.due_date < $1::date
+      where inst.status in ${OPEN} and inst.due_date < ?1
       order by inst.due_date asc limit ${Number(limit)}`,
     [today],
     client,
@@ -254,7 +263,7 @@ export async function overdueReport({ asOf = null, limit = 500 } = {}, client = 
 
 export async function investorStatement({ investorId, from = null, to = null } = {}, client = undefined) {
   const investor = await query(
-    `select id, name, mobile, status, address, created_at from investors where id = $1`,
+    `select id, name, mobile, status, address, created_at from investors where id = ?1`,
     [investorId],
     client,
   );
@@ -262,11 +271,11 @@ export async function investorStatement({ investorId, from = null, to = null } =
 
   const investments = await query(
     `select v.id, v.total_amount, v.installment_count, v.status, v.created_at,
-            coalesce(sum(inst.amount_paid),0)::bigint as collected,
-            coalesce(sum(case when inst.status in ${OPEN} then inst.amount - inst.amount_paid else 0 end),0)::bigint as outstanding
+            coalesce(sum(inst.amount_paid),0) as collected,
+            coalesce(sum(case when inst.status in ${OPEN} then inst.amount - inst.amount_paid else 0 end),0) as outstanding
        from investments v
        left join installments inst on inst.investment_id = v.id
-      where v.investor_id = $1 group by v.id order by v.created_at desc`,
+      where v.investor_id = ?1 group by v.id order by v.created_at desc`,
     [investorId],
     client,
   );
@@ -277,11 +286,11 @@ export async function investorStatement({ investorId, from = null, to = null } =
        from payments p
        join installments inst on inst.id = p.installment_id
        join investments v on v.id = inst.investment_id
-      where v.investor_id = $1
-        and ($2::date is null or p.created_at >= $2::date)
-        and ($3::date is null or p.created_at < ($3::date + interval '1 day'))
+      where v.investor_id = ?1
+        and (?2 is null or p.created_at >= ?2)
+        and (?3 is null or p.created_at < ?3)
       order by p.created_at desc`,
-    [investorId, from, to],
+    [investorId, from ? dayStart(from) : null, to ? dayStart(addDays(to, 1)) : null],
     client,
   );
 
@@ -289,7 +298,7 @@ export async function investorStatement({ investorId, from = null, to = null } =
     `select inst.id, inst.serial, inst.amount, inst.amount_paid, (inst.amount - inst.amount_paid) as outstanding,
             inst.due_date, inst.status, v.id as investment_id
        from installments inst join investments v on v.id = inst.investment_id
-      where v.investor_id = $1 order by v.id asc, inst.serial asc`,
+      where v.investor_id = ?1 order by v.id asc, inst.serial asc`,
     [investorId],
     client,
   );

@@ -11,7 +11,8 @@
  * issues a fresh token and invalidates the previous one; the newest SMS always
  * contains the working link (documented in docs/payment-flow.md).
  */
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
+import { NOW } from '../db/sql.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { addDays, dhakaDate, diffDays, isoDateOnly } from '../utils/dates.js';
@@ -35,20 +36,21 @@ const BASE_SELECT = `
 export async function runRemindersJob({ dryRun = false } = {}) {
   const today = dhakaDate();
   const dueSoonTo = addDays(today, config.jobs.reminderDaysBefore);
-  const hours = String(config.jobs.overdueReminderIntervalHours);
+  // Re-remind only after the configured interval (the same cutoff for both queries).
+  const remindedBefore = new Date(Date.now() - config.jobs.overdueReminderIntervalHours * 3_600_000).toISOString();
 
   const dueSoon = await query(
-    `${BASE_SELECT} and inst.due_date >= $1::date and inst.due_date <= $2::date
-       and (inst.last_reminded_at is null or inst.last_reminded_at < now() - ($3 || ' hours')::interval)
-      order by inst.due_date asc limit $4`,
-    [today, dueSoonTo, hours, MAX_PER_RUN],
+    `${BASE_SELECT} and inst.due_date >= ?1 and inst.due_date <= ?2
+       and (inst.last_reminded_at is null or inst.last_reminded_at < ?3)
+      order by inst.due_date asc limit ?4`,
+    [today, dueSoonTo, remindedBefore, MAX_PER_RUN],
   );
 
   const overdue = await query(
-    `${BASE_SELECT} and inst.due_date < $1::date
-       and (inst.last_reminded_at is null or inst.last_reminded_at < now() - ($2 || ' hours')::interval)
-      order by inst.due_date asc limit $3`,
-    [today, hours, MAX_PER_RUN],
+    `${BASE_SELECT} and inst.due_date < ?1
+       and (inst.last_reminded_at is null or inst.last_reminded_at < ?2)
+      order by inst.due_date asc limit ?3`,
+    [today, remindedBefore, MAX_PER_RUN],
   );
 
   const results = { dueSoonSent: 0, dueSoonFailed: 0, overdueSent: 0, overdueFailed: 0, skipped: 0 };
@@ -64,7 +66,7 @@ export async function runRemindersJob({ dryRun = false } = {}) {
 
   return {
     itemsProcessed: results.dueSoonSent + results.overdueSent,
-    detail: { asOf: today, dueSoonWindowEnds: dueSoonTo, throttleHours: Number(hours), dryRun, ...results },
+    detail: { asOf: today, dueSoonWindowEnds: dueSoonTo, throttleHours: config.jobs.overdueReminderIntervalHours, dryRun, ...results },
   };
 }
 
@@ -95,7 +97,7 @@ async function sendOne(row, { kind, daysLeft = 0, daysOverdue = 0, dryRun, resul
       investorId: row.investor_id,
     });
     if (result.ok) {
-      await query('update installments set last_reminded_at = now(), reminder_count = reminder_count + 1 where id = $1', [row.id]);
+      await query(`update installments set last_reminded_at = ${NOW}, reminder_count = reminder_count + 1 where id = ?1`, [row.id]);
       if (kind === 'OVERDUE') results.overdueSent += 1;
       else results.dueSoonSent += 1;
     } else if (kind === 'OVERDUE') results.overdueFailed += 1;

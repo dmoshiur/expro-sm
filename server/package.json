@@ -3,16 +3,17 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "API server (Express + pg). Also serves the built React client from client/dist.",
+  "description": "API server (Express + Turso/libSQL). Also serves the built React client from client/dist.",
   "main": "server.js",
   "scripts": {
-    "start": "node --env-file=../.env server.js",
-    "dev": "node --watch --env-file=../.env server.js",
-    "migrate": "node --env-file=../.env src/db/migrate.js",
-    "seed": "node --env-file=../.env src/db/seed.js"
+    "start": "node server.js",
+    "dev": "node --watch --env-file-if-exists=../.env server.js",
+    "migrate": "node --env-file-if-exists=../.env src/db/migrate.js",
+    "seed": "node --env-file-if-exists=../.env src/db/seed.js",
+    "db:check": "node --env-file-if-exists=../.env src/db/check.js"
   },
   "dependencies": {
-    "express": "^4.21.2",
-    "pg": "^8.13.1"
+    "@libsql/client": "^0.18.0",
+    "express": "^4.21.2"
   }
 }

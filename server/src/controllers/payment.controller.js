@@ -8,6 +8,7 @@ import * as paymentService from '../services/payment.service.js';
 import * as receiptService from '../services/receipt.service.js';
 import * as audit from '../services/audit.service.js';
 import { paymentsCsv } from '../services/report.service.js';
+import { query } from '../db/client.js';
 
 export async function list(req, res) {
   const { limit, offset } = parsePagination(req.query, { defaultLimit: 25, maxLimit: 200 });
@@ -150,8 +151,7 @@ export async function webhook(req, res) {
   if (!paymentId) throw badRequest('paymentID is required');
   const result = await paymentService.refreshPaymentStatus(Number(req.body?.internalId) || 0, { req, source: 'WEBHOOK' }).catch(async () => {
     // Fall back to a gateway-id lookup when the internal id is not supplied.
-    const { query } = await import('../db/pool.js');
-    const row = await query('select id from payments where gateway_payment_id = $1', [paymentId]);
+    const row = await query('select id from payments where gateway_payment_id = ?1', [paymentId]);
     if (!row.rows[0]) throw badRequest('Unknown payment');
     return paymentService.refreshPaymentStatus(row.rows[0].id, { req, source: 'WEBHOOK' });
   });

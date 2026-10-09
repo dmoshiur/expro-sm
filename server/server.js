@@ -1,21 +1,23 @@
 #!/usr/bin/env node
 /**
- * Single-process entrypoint.
- *   node --env-file=.env server/server.js
+ * Single-process entrypoint (production: `node server/server.js`, no --env-file).
  *
  * Boot sequence
- *   1. validate configuration (fail fast on missing secrets)
- *   2. verify the database and (optionally) apply pending migrations
- *   3. start the in-process job scheduler (Asia/Dhaka aware, idempotent)
- *   4. listen on BIND_HOST:PORT and serve API + built SPA
- *   5. graceful shutdown on SIGTERM/SIGINT (drain, close pool, stop jobs)
+ *   1. validate configuration (fail fast on missing/unsafe database or secrets)
+ *   2. connect to Turso and verify the connection
+ *   3. confirm the schema is up to date. Migrations are NOT applied silently in
+ *      production: run `npm run migrate` explicitly. DB_MIGRATE_ON_START=true opts
+ *      in to applying them at boot (additive, checksum-protected, idempotent).
+ *   4. start the in-process job scheduler (Asia/Dhaka aware, idempotent)
+ *   5. listen on BIND_HOST:PORT (Render sets PORT) and serve API + built SPA
+ *   6. graceful shutdown on SIGTERM/SIGINT (drain, close the database, stop jobs)
  */
 import { createServer } from 'node:http';
 import { config, validateConfig } from './src/config/index.js';
 import { createApp } from './src/app.js';
 import { logger } from './src/utils/logger.js';
-import { getPool, closePool, query } from './src/db/pool.js';
-import { runMigrations } from './src/db/migrate.js';
+import { connectDatabase, closeDatabase, probeForeignKeys } from './src/db/client.js';
+import { appliedMigrations, listMigrationFiles, runMigrations } from './src/db/migrate.js';
 import { startScheduler, stopScheduler } from './src/jobs/scheduler.js';
 
 const SHUTDOWN_TIMEOUT_MS = 15_000;
@@ -28,14 +30,28 @@ async function main() {
     process.exit(1);
   }
 
-  getPool();
-  const dbCheck = await query('select 1 as ok');
-  if (dbCheck.rows[0]?.ok !== 1) throw new Error('Database health check failed');
+  // Throws a sanitized error (no URL or token) when Turso is unreachable or rejects the token.
+  const target = await connectDatabase();
+  logger.info('database connected', { kind: target.kind, host: target.host });
 
-  if (String(process.env.RUN_MIGRATIONS_ON_START ?? 'true') !== 'false') {
+  if (config.db.migrateOnStart) {
     const result = await runMigrations({ log: logger });
     if (result.applied.length) logger.info('startup migrations applied', { files: result.applied });
+  } else {
+    const files = await listMigrationFiles();
+    const done = new Set((await appliedMigrations()).map((r) => r.filename));
+    const pending = files.filter((f) => !done.has(f));
+    if (pending.length > 0) {
+      const msg = `Database schema is missing ${pending.length} migration(s): ${pending.join(', ')}. Run "npm run migrate" first (or set DB_MIGRATE_ON_START=true).`;
+      logger.error('pending migrations - refusing to start', { pending });
+      process.stderr.write(`\n${msg}\n\n`);
+      await closeDatabase();
+      process.exit(1);
+    }
   }
+
+  const fk = await probeForeignKeys();
+  logger.info('database foreign keys', { enforcement: fk });
 
   const app = createApp({ serveStatic: true });
   const server = createServer(app);
@@ -75,7 +91,7 @@ async function main() {
     try {
       stopScheduler();
       await new Promise((resolve) => server.close(resolve));
-      await closePool();
+      closeDatabase();
       logger.info('shutdown complete');
       clearTimeout(force);
       process.exit(0);
@@ -96,8 +112,13 @@ async function main() {
   });
 }
 
-main().catch(async (err) => {
+main().catch((err) => {
   logger.error('fatal startup error', { err });
-  await closePool().catch(() => {});
+  process.stderr.write(`\nStartup failed: ${err?.message ?? err}\n\n`);
+  try {
+    closeDatabase();
+  } catch {
+    /* ignore */
+  }
   process.exit(1);
 });

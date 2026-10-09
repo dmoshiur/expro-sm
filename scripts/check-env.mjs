@@ -32,15 +32,13 @@ if (problems.length) {
 }
 process.stdout.write('Configuration OK.\n');
 
-const { query, closePool } = await import(join(ROOT, 'server/src/db/pool.js'));
+const { runDbCheck } = await import(join(ROOT, 'server/src/db/check.js'));
+const { closeDatabase } = await import(join(ROOT, 'server/src/db/client.js'));
 try {
-  const res = await query('select current_database() as db, version() as version');
-  process.stdout.write(`Database reachable: ${res.rows[0].db}\n`);
-  const migrations = await query(`select count(*)::int as count from schema_migrations`).catch(() => ({ rows: [{ count: 0 }] }));
-  process.stdout.write(`Migrations applied: ${migrations.rows[0].count} (run \`npm run migrate\` if this is lower than expected)\n`);
+  await runDbCheck();
 } catch (err) {
   process.stderr.write(`Database check failed: ${err.message}\n`);
-  await closePool().catch(() => {});
+  closeDatabase();
   process.exit(1);
 }
-await closePool();
+closeDatabase();

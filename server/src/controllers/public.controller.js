@@ -11,6 +11,7 @@ import * as paymentService from '../services/payment.service.js';
 import { summarizePaymentForPublic, getPayment } from '../services/payment.service.js';
 import * as audit from '../services/audit.service.js';
 import { config } from '../config/index.js';
+import { query } from '../db/client.js';
 
 /** GET /api/public/pay/:token */
 export async function viewLink(req, res) {
@@ -88,8 +89,7 @@ export async function verifyPayment(req, res) {
 }
 
 async function getPaymentByGateway(gatewayPaymentId) {
-  const { query } = await import('../db/pool.js');
-  const res = await query('select * from payments where gateway_payment_id = $1', [gatewayPaymentId]);
+  const res = await query('select * from payments where gateway_payment_id = ?1', [gatewayPaymentId]);
   return res.rows[0] ?? null;
 }
 

@@ -1,17 +1,19 @@
 /**
  * Daily housekeeping (03:15 Asia/Dhaka):
  *   * revoke expired sessions and delete long-expired ones
- *   * keep the sessions table small (single Postgres instance by design)
+ *   * keep the sessions table small (single Turso database by design)
  *   * refresh INVESTMENT status (ACTIVE -> COMPLETED) after manual data edits
  */
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
+import { NOW } from '../db/sql.js';
 
 export async function runHousekeepingJob() {
   const expired = await query(
-    `update sessions set revoked_at = now(), revoked_reason = 'EXPIRED'
-      where revoked_at is null and expires_at < now() returning id`,
+    `update sessions set revoked_at = ${NOW}, revoked_reason = 'EXPIRED'
+      where revoked_at is null and expires_at < ${NOW} returning id`,
   );
-  const purged = await query(`delete from sessions where expires_at < now() - interval '30 days' returning id`);
+  const purgeBefore = new Date(Date.now() - 30 * 86_400_000).toISOString();
+  const purged = await query('delete from sessions where expires_at < ?1 returning id', [purgeBefore]);
 
   // Safety net for the investment status invariant (cheap, idempotent).
   const stale = await query(
@@ -23,9 +25,9 @@ export async function runHousekeepingJob() {
   );
   let statusFixed = 0;
   for (const row of stale.rows) {
-    const changed = await query('select status from investments where id = $1', [row.id]);
+    const changed = await query('select status from investments where id = ?1', [row.id]);
     if (changed.rows[0]?.status === 'ACTIVE') {
-      await query('update investments set status = $2 where id = $1', [row.id, 'COMPLETED']);
+      await query(`update investments set status = ?2, updated_at = ${NOW} where id = ?1`, [row.id, 'COMPLETED']);
       statusFixed += 1;
     }
   }

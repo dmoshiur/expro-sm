@@ -41,9 +41,9 @@ describe('login', () => {
     assert.equal(locked.status, 423);
     assert.equal(locked.error.code, 'ACCOUNT_LOCKED');
 
-    const row = await ctx.query('select locked_until, failed_login_count from admins where id = $1', [victim.id]);
+    const row = await ctx.query('select locked_until, failed_login_count from admins where id = ?1', [victim.id]);
     assert.ok(row.rows[0].locked_until, 'locked_until must be set');
-    await ctx.query(`update admins set locked_until = null, failed_login_count = 0 where id = $1`, [victim.id]);
+    await ctx.query(`update admins set locked_until = null, failed_login_count = 0 where id = ?1`, [victim.id]);
   });
 
   test('successful login sets an httpOnly + SameSite=Strict session cookie', async () => {
@@ -90,7 +90,7 @@ describe('2FA (TOTP)', () => {
     const wrong = await sessionClient.post('/api/auth/totp/confirm', { code: '000000' });
     assert.equal(wrong.status, 400);
     const wrongAudit = await ctx.query(
-      `select count(*)::int as count from audit_logs where action = 'TOTP_VERIFY_FAILED' and entity_id = (select id::text from admins where email = $1)`,
+      `select count(*) as count from audit_logs where action = 'TOTP_VERIFY_FAILED' and entity_id = (select cast(id as text) from admins where email = ?1)`,
       [email],
     );
     assert.ok(wrongAudit.rows[0].count >= 1);

@@ -10,7 +10,8 @@
  * The public endpoint reveals a deliberately tiny payload: first name only,
  * installment number, amount, due date.
  */
-import { query, withTransaction } from '../db/pool.js';
+import { query, withTransaction } from '../db/client.js';
+import { NOW } from '../db/sql.js';
 import { config } from '../config/index.js';
 import { AppError, conflict, notFound } from '../utils/errors.js';
 import { firstNameOnly, maskMobile } from '../utils/mask.js';
@@ -37,7 +38,7 @@ export function buildCallbackUrl(token) {
  */
 export async function issueToken(installmentId, { regenerate = false, ttlDays = config.paymentLink.ttlDays, actor = null, req = null, client = null } = {}) {
   const run = async (cx) => {
-    const current = await cx.query('select * from installments where id = $1 for update', [installmentId]);
+    const current = await cx.query('select * from installments where id = ?1 ', [installmentId]);
     const row = current.rows[0];
     if (!row) throw notFound('Installment not found');
     if (['PAID', 'CANCELLED'].includes(row.status)) {
@@ -48,8 +49,8 @@ export async function issueToken(installmentId, { regenerate = false, ttlDays = 
     const expiresAt = new Date(Date.now() + ttlDays * 86_400_000);
     const updated = await cx.query(
       `update installments
-          set pay_token_hash = $2, token_expires_at = $3, token_issued_at = now(), token_version = token_version + 1
-        where id = $1
+          set pay_token_hash = ?2, token_expires_at = ?3, token_issued_at = ${NOW}, updated_at = ${NOW}, token_version = token_version + 1
+        where id = ?1
         returning id, serial, amount, amount_paid, due_date, status, token_expires_at, token_version`,
       [installmentId, tokenHash, expiresAt],
     );
@@ -96,7 +97,7 @@ export async function resolveToken(token) {
        from installments inst
        join investments v on v.id = inst.investment_id
        join investors i on i.id = v.investor_id
-      where inst.pay_token_hash = $1`,
+      where inst.pay_token_hash = ?1`,
     [hash],
   );
   const row = res.rows[0];

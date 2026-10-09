@@ -7,7 +7,7 @@ import { toPoisha } from '../utils/money.js';
 import * as installmentService from '../services/installment.service.js';
 import * as paylinkService from '../services/paylink.service.js';
 import { sendPaymentLink } from '../services/sms.service.js';
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
 
 export async function list(req, res) {
   const { limit, offset } = parsePagination(req.query, { defaultLimit: 25, maxLimit: 200 });
@@ -42,12 +42,12 @@ export async function detail(req, res) {
   const installment = await installmentService.getInstallment(Number(req.params.id));
   const payments = await query(
     `select id, amount, status, method, gateway, trx_id, manual_reference, paid_at, created_at, failure_reason
-       from payments where installment_id = $1 order by created_at desc`,
+       from payments where installment_id = ?1 order by created_at desc`,
     [installment.id],
   );
   const sms = await query(
     `select id, message_type, provider_status, created_at, mobile_masked from sms_logs
-      where installment_id = $1 order by created_at desc limit 20`,
+      where installment_id = ?1 order by created_at desc limit 20`,
     [installment.id],
   );
   const today = dhakaDate();

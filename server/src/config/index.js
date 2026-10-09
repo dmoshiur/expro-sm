@@ -6,6 +6,7 @@
  * there is no dotenv dependency anywhere in this project.
  */
 import { randomBytes } from 'node:crypto';
+import { describeDatabaseTarget } from './database.js';
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 const FALSY = new Set(['0', 'false', 'no', 'off', '']);
@@ -45,11 +46,6 @@ function loadConfig(env = process.env) {
   const port = int(env, 'PORT', 3000);
   const publicBaseUrl = (str(env, 'PUBLIC_BASE_URL', `http://localhost:${port}`) || '').replace(/\/+$/, '');
 
-  const dbUrl = str(env, 'DATABASE_URL');
-  const dbSslMode = (str(env, 'DB_SSL', 'auto') || 'auto').toLowerCase();
-  const dbIsLocal = /@(localhost|127\.0\.0\.1|\[::1\])/.test(dbUrl || '');
-  const dbSsl = dbSslMode === 'auto' ? !dbIsLocal : TRUTHY.has(dbSslMode);
-
   const cfg = {
     nodeEnv,
     isProd,
@@ -63,11 +59,12 @@ function loadConfig(env = process.env) {
     allowedOrigins: list(env, 'ALLOWED_ORIGINS'),
 
     db: {
-      url: dbUrl,
-      ssl: dbSsl,
-      sslRejectUnauthorized: bool(env, 'DB_SSL_REJECT_UNAUTHORIZED', false),
-      poolMax: int(env, 'DB_POOL_MAX', 10),
-      statementTimeoutMs: int(env, 'DB_STATEMENT_TIMEOUT_MS', 15000),
+      // Turso (libSQL). Remote in production; file: only for tests/dev.
+      url: str(env, 'TURSO_DATABASE_URL'),
+      authToken: str(env, 'TURSO_AUTH_TOKEN'),
+      // Apply pending migrations when the server starts. Additive and idempotent, never resets data.
+      // Default: on outside production, off in production (run `npm run migrate` explicitly).
+      migrateOnStart: bool(env, 'DB_MIGRATE_ON_START', !isProd),
     },
 
     security: {
@@ -144,9 +141,9 @@ export const config = loadConfig();
  */
 export function validateConfig(cfg = config) {
   const problems = [];
-  if (!cfg.db.url) {
-    problems.push('DATABASE_URL is required (Supabase/PostgreSQL connection string)');
-  }
+  problems.push(
+    ...describeDatabaseTarget(cfg.db, { isProd: cfg.isProd, isTest: cfg.isTest }).problems,
+  );
   if (!cfg.security.sessionSecret || cfg.security.sessionSecret.length < 32) {
     problems.push('SESSION_SECRET is required and must be at least 32 characters');
   }
