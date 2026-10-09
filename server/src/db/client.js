@@ -24,7 +24,6 @@ import { describeDatabaseTarget, scrubDatabaseSecrets } from '../config/database
 import { logger } from '../utils/logger.js';
 import { DbError, mapDbError, safeDbDiagnostics } from './errors.js';
 import { assertPlaceholders, rowToObject, toDbArg, stripLiteralsAndComments } from './values.js';
-import { NOW } from './sql.js';
 
 const txStore = new AsyncLocalStorage();
 let state = null; // { client, kind, safeDescription, foreignKeys }
@@ -292,36 +291,64 @@ export async function checkDatabaseHealth({ timeoutMs = 3000 } = {}) {
   }
 }
 
-class ProbeRollback extends Error {}
-
 /**
- * Determines whether the connected database enforces foreign keys. Runs an insert
- * that violates a foreign key inside a transaction and rolls it back. Must run
- * after migrations (needs the sessions table).
+ * Determines whether the connected database enforces foreign keys.
+ *
+ * Previous implementation inserted a row into `sessions` with `admin_id = -1`
+ * and a `strftime('%Y-%m-%dT%H:%M:%fZ','now')` timestamp, expecting a foreign-key
+ * violation. That approach had three problems:
+ *   1. It used a fake administrator ID (-1) that does not exist and violates the
+ *      `REFERENCES admins(id)` constraint.
+ *   2. The timestamp relied on `strftime` with string literals; when logs stripped
+ *      literals it appeared as `strftime('', '')`, and a malformed expression
+ *      yields NULL -> `NOT NULL` violation (`SQLITE_CONSTRAINT`) instead of the
+ *      intended `FOREIGN KEY` violation, masking the real enforcement state.
+ *   3. It performed a write during startup, creating a probe session that had
+ *      to be rolled back; a read-only check is safer.
+ *
+ * The corrected probe is read-only:
+ *   - `PRAGMA foreign_keys` is the canonical SQLite check (returns 1 when
+ *     enforcement is on). For local files we already executed `PRAGMA
+ *     foreign_keys=ON` at connect time, so this reflects the true state.
+ *   - For remote Turso where PRAGMA may not be reliable, we fall back to a
+ *     trivial `SELECT 1` to confirm connectivity and report `unknown` rather
+ *     than inserting fake data. The health endpoint already distinguishes
+ *     `ok` vs `unknown`.
+ * This never inserts a fake session, never weakens constraints, and uses a
+ * valid, driver-native timestamp path (no ad-hoc strftime).
+ *
  * @returns {Promise<'enforced'|'not_enforced'|'unknown'>}
  */
 export async function probeForeignKeys() {
   let result = 'unknown';
+  // Retain the quiet flag for any future writes (no write is performed now).
   quietConstraintLog = true;
   try {
-    await withTransaction(async (tx) => {
-      try {
-        await tx.query(
-          `INSERT INTO sessions (admin_id, token_hash, expires_at) VALUES (-1, ?1, ${NOW})`,
-          [`fk-probe-${Date.now()}-${Math.random()}`],
-        );
-        result = 'not_enforced';
-      } catch (err) {
-        if (err?.code === 'FOREIGN_KEY_VIOLATION') result = 'enforced';
-        else result = 'unknown';
-      }
-      throw new ProbeRollback('probe');
-    });
-  } catch (err) {
-    if (!(err instanceof ProbeRollback)) throw err;
-  } finally {
-    quietConstraintLog = false;
+    const rs = await query('PRAGMA foreign_keys');
+    const row = rs.rows[0];
+    if (row) {
+      const raw = row.foreign_keys ?? Object.values(row)[0];
+      const n = Number(raw);
+      if (n === 1) result = 'enforced';
+      else if (n === 0) result = 'not_enforced';
+    }
+  } catch (_) {
+    // PRAGMA may not be supported on some Turso transports; fall through.
   }
+  // Trust the file-mode state set during connectDatabase (we explicitly set ON).
+  if (result === 'unknown' && state?.kind === 'file' && state?.foreignKeys === 'enforced') {
+    result = 'enforced';
+  }
+  // Verify DB is still reachable without writing; keeps state as unknown if we
+  // cannot determine FK enforcement without a write.
+  if (result === 'unknown') {
+    try {
+      await query('SELECT 1 AS ok');
+    } catch {
+      // connectivity failure; health check will report unavailable. Keep unknown.
+    }
+  }
+  quietConstraintLog = false;
   if (state) state.foreignKeys = result;
   return result;
 }

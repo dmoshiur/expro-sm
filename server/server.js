@@ -13,8 +13,10 @@
  *   6. graceful shutdown on SIGTERM/SIGINT (drain, close the database, stop jobs)
  */
 import { createServer } from 'node:http';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { config, validateConfig } from './src/config/index.js';
-import { createApp } from './src/app.js';
+import { createApp, CLIENT_DIST } from './src/app.js';
 import { logger } from './src/utils/logger.js';
 import { connectDatabase, closeDatabase, probeForeignKeys } from './src/db/client.js';
 import { runMigrations } from './src/db/migrate.js';
@@ -51,6 +53,35 @@ async function main() {
 
   const fk = await probeForeignKeys();
   logger.info('database foreign keys', { enforcement: fk });
+
+  if (config.isProd) {
+    if (config.payments.provider === 'mock') {
+      logger.warn('payment provider is mock in production – test-only, no real bKash transactions will occur', {
+        provider: 'mock',
+      });
+    }
+    if (config.sms.provider === 'console' || config.sms.dryRun) {
+      logger.info('sms provider is console/dry-run in production – messages are logged, not sent', {
+        provider: config.sms.provider,
+        dryRun: config.sms.dryRun,
+      });
+    }
+  }
+
+  // Production must have a built frontend; fail fast rather than serving a
+  // perpetual 503 placeholder. The build pipeline (npm run build) already runs
+  // verify-build.mjs, but this guard catches a mis-configured Render build
+  // that skipped the build step or a corrupted deploy.
+  if (config.isProd) {
+    const indexHtml = join(CLIENT_DIST, 'index.html');
+    if (!existsSync(indexHtml)) {
+      const msg = `Frontend build not found at ${indexHtml}. Run \`npm run build\` (and ensure Render Build Command is \`npm ci && npm run build\`) before starting in production.`;
+      logger.error('missing frontend build - refusing to start', { dir: CLIENT_DIST });
+      process.stderr.write(`\n${msg}\n\n`);
+      await closeDatabase();
+      process.exit(1);
+    }
+  }
 
   const app = createApp({ serveStatic: true });
   const server = createServer(app);

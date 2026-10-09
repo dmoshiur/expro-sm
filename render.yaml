@@ -1,0 +1,85 @@
+# Render blueprint for Investor Installment Portal (expro-sm)
+# Repository root is the service root (leave Render “Root Directory” blank).
+# Node >=22.9 is required (see package.json engines). Render will use the
+# latest Node 22.x when this file is present; you can also set NODE_VERSION.
+
+services:
+  - type: web
+    name: expro-sm
+    env: node
+    plan: free
+    # Build writes client/dist (Vite) and verifies it. `npm ci` must run with
+    # devDependencies (vite, react) so that the build succeeds; the verification
+    # step fails the build with a clear error rather than silently deploying a
+    # 503 frontend. `NPM_CONFIG_PRODUCTION=false` guarantees dev deps are kept
+    # for the build step even when NODE_ENV=production.
+    buildCommand: npm ci && npm run build
+    # Use the explicit migrate + start sequence. Either:
+    #   * Pre-Deploy: `npm run migrate` and Start: `npm start` (preferred if
+    #     your plan exposes Pre-Deploy), or
+    #   * Start: `npm run migrate && npm start` when Pre-Deploy is unavailable.
+    # The blueprint below uses the simple start; override in the dashboard if
+    # you have Pre-Deploy.
+    startCommand: npm start
+    # If your Render plan supports PreDeploy, uncomment the next line and change
+    # startCommand to `npm start` alone:
+    # preDeployCommand: npm run migrate
+    healthCheckPath: /api/health
+    autoDeploy: false
+
+    # Node version – Render reads `engines.node` (>=22.9) but setting it here
+    # makes the requirement explicit for reviewers.
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22.9.0"
+      - key: BIND_HOST
+        value: 0.0.0.0
+      - key: PUBLIC_BASE_URL
+        value: https://expro-sm.onrender.com
+      - key: TRUST_PROXY
+        value: 1
+      - key: LOG_LEVEL
+        value: info
+      # Ensure the build step keeps devDependencies (vite) even though
+      # NODE_ENV=production. Without this, `npm ci` could be run as
+      # `npm ci --production` on some images and vite would be missing.
+      - key: NPM_CONFIG_PRODUCTION
+        value: false
+
+      # --- Required secrets (set in Render dashboard → Environment, do NOT
+      #     commit values here). They are marked `sync: false` so this file
+      #     never overwrites dashboard values on deploy.
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+
+      # --- Optional but recommended (dashboard may leave them at defaults).
+      # Payment: keep mock in production only if you intentionally run offline.
+      # Real bKash requires PAYMENT_PROVIDER=bkash and all BKASH_* vars.
+      - key: PAYMENT_PROVIDER
+        value: mock
+        sync: false
+      - key: SMS_PROVIDER
+        value: console
+        sync: false
+      - key: SMS_DRY_RUN
+        value: true
+        sync: false
+      # Feature flags you may tune later without redeploying the blueprint:
+      - key: DB_MIGRATE_ON_START
+        value: false
+        sync: false
+      - key: JOBS_ENABLED
+        value: true
+        sync: false
+
+    # Disk is not required (Turso is remote). Keep the service stateless.
+    # If you need a one-off shell for diagnostics:
+    #   Render → Shell → `npm run db:check`  (reports migrations, FKs, invariants)

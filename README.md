@@ -136,30 +136,70 @@ production deployment order is build → migrate → start; opting into
 ## Render deployment / redeployment
 
 Use the repository root (leave Render **Root Directory** blank), Node ≥22.9,
-and these commands:
+and these commands (also encoded in `render.yaml`):
 
 * **Build Command:** `npm ci && npm run build`
+  * `npm ci` installs all workspaces (server + client). `npm run build`
+    builds the React SPA with Vite into `client/dist` and then runs
+    `scripts/verify-build.mjs`, which fails the build with a clear error if
+    `client/dist/index.html` or the hashed assets are missing (instead of
+    silently deploying a 503 frontend). The build needs `vite` and
+    `@vitejs/plugin-react` — they are `devDependencies` at the repository root,
+    so the build must run with `NPM_CONFIG_PRODUCTION=false` (the default for
+    `npm ci`; do not run `npm ci --production` / `--omit=dev` before the build).
 * **Pre-Deploy Command** (if available): `npm run migrate`
 * **Start Command:** `npm start`
 * If a pre-deploy command is unavailable, use **Start Command**:
   `npm run migrate && npm start` (the `&&` must remain).
-* **Health Check Path:** `/api/health`
+* **Health Check Path:** `/api/health` (returns 200 only when the Turso
+  database answers `SELECT 1`; never leaks URLs or tokens).
 
-Set `NODE_ENV=production`, `BIND_HOST=0.0.0.0`,
-`PUBLIC_BASE_URL=https://<your-service>.onrender.com`, the Turso URL/token,
-`SESSION_SECRET`, and `ENCRYPTION_KEY` in Render's Environment tab. Keep existing
-security keys and payment/SMS settings unchanged. Render supplies `PORT`.
-Keep `DB_MIGRATE_ON_START=false` with the explicit command above, or alternatively
-use `DB_MIGRATE_ON_START=true` with `npm start` alone.
+The Express server serves `client/dist` from an absolute path
+(`server/src/app.js:CLIENT_DIST = resolve(../../client/dist)`) and falls back
+to `index.html` for SPA routes. `/` serves the built frontend (200) after a
+successful build; `/favicon.ico` serves the real `favicon.ico` from the build
+or a proper 404 — it never triggers a 503. `/api/*` is never swallowed by the
+fallback, and unknown JSON routes return `{ error: { code: 'NOT_FOUND' } }`.
+
+Required Render environment variables (`render.yaml` marks them `sync: false`
+so the dashboard is the source of truth):
+
+| Required | Key | Example / Notes |
+|----------|-----|-----------------|
+| **yes** | `NODE_ENV` | `production` (enables secure cookies, HSTS, `https` check on `PUBLIC_BASE_URL`) |
+| **yes** | `TURSO_DATABASE_URL` | `libsql://…-….turso.io` (remote Turso only; `file:` rejected in prod) |
+| **yes** | `TURSO_AUTH_TOKEN` | `turso db tokens create <db>` — secret |
+| **yes** | `SESSION_SECRET` | `≥32 chars`, `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"` |
+| **yes** | `ENCRYPTION_KEY` | `64 hex chars (32 bytes)`, `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` — rotation invalidates stored NID/TOTP ciphertext |
+| **yes** | `PUBLIC_BASE_URL` | `https://expro-sm.onrender.com` (must be `https` in prod; used for payment links & callbacks) |
+| auto | `PORT` | Supplied by Render (default 10000); `BIND_HOST=0.0.0.0` is already the default |
+| auto | `TRUST_PROXY` | `1` (already default; needed for `req.ip` behind Render's proxy) |
+
+Optional (defaults shown; set explicitly if you need live providers):
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `PAYMENT_PROVIDER` | `mock` | **Mock is test-only** — it simulates bKash without network and must not be used for real money. Set to `bkash` for live payments and provide `BKASH_*`. Server logs `paymentProvider` at startup; with `mock` in production it warns. |
+| `SMS_PROVIDER` | `console` | `console` logs masked messages, does not send. Real `bulksmsbd`/`generic` requires `SMS_API_URL`/`SMS_API_KEY` and `SMS_DRY_RUN=false`. |
+| `DB_MIGRATE_ON_START` | `false` in prod (`true` in dev) | Keep `false` and run `npm run migrate` explicitly (see commands above). |
+| `LOG_LEVEL` | `info` |  |
+| `NPM_CONFIG_PRODUCTION` | `false` | Keep `false` for the Build Command so `vite` is available. |
+
+Copy `.env.example` to `.env` for local development (use a `file:` Turso URL there). Do not deploy a `.env` file to Render.
 
 Redeploy the revision containing this fix. On a fresh database expect
 `migration applied` for `001_turso_initial_schema.sql`, then `migrations complete`,
-`database connected`, the foreign-key probe, and `investor portal listening`.
-On subsequent deploys the initial migration is skipped. Run `npm run db:check`
-in the Render shell after migration: pending migrations must be zero and both
-invariant mismatch counts must be zero. Do not run a reset, import, or sample
-seed as part of repair. If migration reports incompatible/untracked schema,
-stop and follow the operator-review guidance rather than editing history.
+`database connected`, the read-only foreign-key probe (`database foreign keys`), and
+`investor portal listening` with `env: production`, `publicBaseUrl: https://…`,
+`paymentProvider` and `smsProvider`. On subsequent deploys the initial migration
+is skipped. Run `npm run db:check` in the Render shell after migration: pending
+migrations must be zero and both invariant mismatch counts must be zero. Run
+`npm run verify:deploy` locally (`node scripts/verify-deploy.mjs`) to check
+the build, the Turso connection, session handling, `/` (200), `/favicon.ico`
+(200 or 404, never 503), `/api/health`, SPA fallback and auth wiring.
+Do not run a reset, import, or sample seed as part of repair. If migration
+reports incompatible/untracked schema, stop and follow the operator-review
+guidance in `docs/database.md` rather than editing history.
 
 ## bKash
 

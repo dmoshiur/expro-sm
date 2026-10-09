@@ -13,8 +13,10 @@
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "build": "npm run build --workspace client",
+    "build": "npm run build --workspace client && node scripts/verify-build.mjs",
     "start": "node server/server.js",
+    "verify:build": "node scripts/verify-build.mjs",
+    "verify:deploy": "node scripts/verify-deploy.mjs",
     "migrate": "node --env-file-if-exists=.env server/src/db/migrate.js",
     "seed": "node --env-file-if-exists=.env server/src/db/seed.js",
     "test": "node --env-file-if-exists=.env --test --test-concurrency=1 \"server/tests/*.test.js\"",
