@@ -22,8 +22,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { config } from '../config/index.js';
 import { describeDatabaseTarget, scrubDatabaseSecrets } from '../config/database.js';
 import { logger } from '../utils/logger.js';
-import { DbError, mapDbError } from './errors.js';
-import { assertPlaceholders, rowToObject, toDbArg } from './values.js';
+import { DbError, mapDbError, safeDbDiagnostics } from './errors.js';
+import { assertPlaceholders, rowToObject, toDbArg, stripLiteralsAndComments } from './values.js';
 import { NOW } from './sql.js';
 
 const txStore = new AsyncLocalStorage();
@@ -66,7 +66,8 @@ export function databaseDescription() {
 }
 
 function firstLine(sql) {
-  return String(sql).trim().split('\n')[0].slice(0, 120);
+  // Never log literal values or comments (which can carry imported data).
+  return stripLiteralsAndComments(String(sql)).trim().split('\n')[0].slice(0, 120);
 }
 
 function toResult(rs) {
@@ -88,7 +89,11 @@ async function runOn(target, text, params) {
   } catch (err) {
     const mapped = mapDbError(err);
     const code = mapped?.code ?? 'UNKNOWN';
-    const meta = { code, sqliteCode: mapped?.sqliteCode ?? null, constraint: mapped?.constraint ?? null, statement: firstLine(sql) };
+    const meta = {
+      code, sqliteCode: mapped?.sqliteCode ?? null, constraint: mapped?.constraint ?? null,
+      statement: firstLine(sql),
+      ...(!config.isProd ? { diagnostic: safeDbDiagnostics(err) } : {}),
+    };
     if (CONSTRAINT_CODES.has(code)) {
       if (!quietConstraintLog) logger.warn('database constraint rejected a statement', meta);
     }

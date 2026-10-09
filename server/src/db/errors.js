@@ -58,7 +58,7 @@ export function mapDbError(err) {
     return new DbError('DB_UNAVAILABLE', 'Database is unreachable', { cause: err });
   }
   if (err?.name === 'LibsqlError' || raw.startsWith('SQLITE_')) {
-    return new DbError('DB_ERROR', 'Database query failed', { sqliteCode: raw || ext || null, cause: err });
+    return new DbError('DB_ERROR', 'Database query failed', { sqliteCode: ext || raw || null, cause: err });
   }
   return err;
 }
@@ -67,4 +67,26 @@ export function mapDbError(err) {
 export function parseConstraint(message) {
   const m = /(?:UNIQUE|NOT NULL|CHECK|FOREIGN KEY) constraint failed:?\s*(.*)$/i.exec(message);
   return m ? m[1].trim() : null;
+}
+
+/** Allowlisted upstream diagnostics. Never copy raw messages, SQL, args, URLs or
+ * stacks: driver messages can echo bound data. Retain the original cause on DbError
+ * for debugging, but only these safe facts go to development logs. */
+export function safeDbDiagnostics(err) {
+  const chain = [];
+  const seen = new Set();
+  for (let e = err; e && !seen.has(e) && chain.length < 4; e = e.cause) {
+    seen.add(e);
+    const message = String(e.message ?? '');
+    let reason = 'UNCLASSIFIED';
+    if (/no such table/i.test(message)) reason = 'MISSING_TABLE';
+    else if (/no such column|has no column named/i.test(message)) reason = 'MISSING_COLUMN';
+    else if (/already exists/i.test(message)) reason = 'OBJECT_ALREADY_EXISTS';
+    else if (/syntax error/i.test(message)) reason = 'SQL_SYNTAX';
+    else if (/unauthori[sz]ed|forbidden|jwt/i.test(message)) reason = 'AUTH_REJECTED';
+    const safeCode = (value) => /^(?:SQLITE_[A-Z0-9_]+|[A-Z][A-Z0-9_]{0,60})$/.test(String(value ?? '')) ? String(value) : null;
+    chain.push({ code: safeCode(e.code), extendedCode: safeCode(e.extendedCode),
+      rawCode: Number.isInteger(e.rawCode) ? e.rawCode : null, reason });
+  }
+  return chain;
 }

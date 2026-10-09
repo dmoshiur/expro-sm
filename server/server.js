@@ -17,7 +17,7 @@ import { config, validateConfig } from './src/config/index.js';
 import { createApp } from './src/app.js';
 import { logger } from './src/utils/logger.js';
 import { connectDatabase, closeDatabase, probeForeignKeys } from './src/db/client.js';
-import { appliedMigrations, listMigrationFiles, runMigrations } from './src/db/migrate.js';
+import { runMigrations } from './src/db/migrate.js';
 import { startScheduler, stopScheduler } from './src/jobs/scheduler.js';
 
 const SHUTDOWN_TIMEOUT_MS = 15_000;
@@ -38,9 +38,8 @@ async function main() {
     const result = await runMigrations({ log: logger });
     if (result.applied.length) logger.info('startup migrations applied', { files: result.applied });
   } else {
-    const files = await listMigrationFiles();
-    const done = new Set((await appliedMigrations()).map((r) => r.filename));
-    const pending = files.filter((f) => !done.has(f));
+    // Read-only verification shares the runner's metadata and checksum checks.
+    const { pending } = await runMigrations({ dryRun: true, log: logger });
     if (pending.length > 0) {
       const msg = `Database schema is missing ${pending.length} migration(s): ${pending.join(', ')}. Run "npm run migrate" first (or set DB_MIGRATE_ON_START=true).`;
       logger.error('pending migrations - refusing to start', { pending });
