@@ -55,14 +55,20 @@ function mountSpa(app) {
   const hasBuild = existsSync(indexHtml);
   if (!hasBuild) {
     logger.warn('client build not found - run `npm run build` before `npm start` for the full app', { dir: CLIENT_DIST });
+    if (config.isProd) {
+      logger.error('production build missing: frontend assets not found - refusing to serve SPA', { dir: CLIENT_DIST });
+    }
   }
   // Hashed assets are immutable; index.html must never be cached.
+  // Use an absolute, verified path (CLIENT_DIST) so the server reliably serves
+  // the Vite output (client/dist) regardless of working directory.
   app.use(
     express.static(CLIENT_DIST, {
       index: false,
       etag: true,
       maxAge: '1y',
       immutable: true,
+      fallthrough: true,
       setHeaders(res, path) {
         if (path.endsWith('index.html')) res.setHeader('Cache-Control', 'no-store');
         res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -70,16 +76,36 @@ function mountSpa(app) {
     }),
   );
 
+  // Favicon: serve the real file when the build provides one (Vite copies
+  // client/public/favicon.ico to client/dist/favicon.ico). When absent, return
+  // a proper 404 instead of the SPA fallback or a 503.
+  app.get('/favicon.ico', (req, res, _next) => {
+    // If express.static already served the file, this handler is not reached
+    // because the file was found. If we are here, the file is missing.
+    return res.status(404).type('text/plain').send('Not found');
+  });
+
   app.get('*', (req, res, next) => {
+    // API and pay callback must never be swallowed by the SPA fallback.
     if (req.path.startsWith('/api/')) return next();
+    if (req.path.startsWith('/pay/')) return next();
+    // Asset requests (js, css, images, favicon, etc.) should be 404 when the
+    // file is missing, not HTML. Detect by extension: a dot in the last
+    // segment suggests an asset rather than a SPA route.
+    const lastSegment = req.path.split('/').pop() || '';
+    const isAssetRequest = lastSegment.includes('.');
+    if (isAssetRequest) return next();
     if (!req.accepts('html')) return next();
     if (!hasBuild) {
+      // Only HTML page navigations get the 503 placeholder when the build is
+      // absent. Asset 404s are handled by notFoundHandler (JSON or 404) so
+      // `/favicon.ico` never triggers an application-wide 503.
       return res
         .status(503)
         .type('html')
         .send(
-          '<!doctype html><meta charset="utf-8"><title>Investor Portal</title>' +
-            '<body style="font-family:system-ui;padding:2rem;max-width:44rem;margin:auto">' +
+          '<!doctype html><meta charset=\"utf-8\"><title>Investor Portal</title>' +
+            '<body style=\"font-family:system-ui;padding:2rem;max-width:44rem;margin:auto\">' +
             '<h1>Frontend not built yet</h1>' +
             '<p>Run <code>npm run build</code> (production) or <code>npm run dev</code> (development, Vite on :5173).</p>' +
             '<p>The API is available under <code>/api</code>.</p></body>',
