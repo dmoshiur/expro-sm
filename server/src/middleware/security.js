@@ -149,7 +149,7 @@ export const apiLimiter = createRateLimiter({
   name: 'api',
   windowMs: config.security.rateLimits.api.windowMs,
   max: config.security.rateLimits.api.max,
-  keyFn: (req) => req.admin?.id ?? req.clientIp ?? 'unknown',
+  keyFn: (req) => req.admin?.id ?? (req.investor ? `inv:${req.investor.id}` : req.clientIp ?? 'unknown'),
 });
 
 export const loginLimiter = createRateLimiter({
@@ -162,6 +162,23 @@ export const loginLimiter = createRateLimiter({
 
 export const loginIpLimiter = createRateLimiter({
   name: 'login-ip',
+  windowMs: config.security.rateLimits.login.windowMs,
+  max: Math.max(config.security.rateLimits.login.max * 3, 15),
+  keyFn: (req) => req.clientIp ?? 'unknown',
+  message: 'Too many login attempts from this address. Please wait and try again.',
+});
+
+/** Investor portal login: same windows as admin login, keyed by login id. */
+export const investorLoginLimiter = createRateLimiter({
+  name: 'investor-login',
+  windowMs: config.security.rateLimits.login.windowMs,
+  max: config.security.rateLimits.login.max,
+  keyFn: (req) => `${req.clientIp ?? 'unknown'}|${String(req.body?.loginId ?? '').toLowerCase().slice(0, 60)}`,
+  message: 'Too many login attempts. Please wait and try again.',
+});
+
+export const investorLoginIpLimiter = createRateLimiter({
+  name: 'investor-login-ip',
   windowMs: config.security.rateLimits.login.windowMs,
   max: Math.max(config.security.rateLimits.login.max * 3, 15),
   keyFn: (req) => req.clientIp ?? 'unknown',

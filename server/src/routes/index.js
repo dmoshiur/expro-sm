@@ -8,6 +8,7 @@
  *   /api/installments      - installment level operations
  *   /api/payments          - payments, manual entries, receipts
  *   /api/public            - investor-facing (token protected, no session)
+ *   /api/portal            - investor self-service (investor session cookie)
  *   /api/dashboard         - KPIs
  *   /api/reports           - reports + CSV exports
  *   /api/audit             - audit log (SUPER_ADMIN)
@@ -23,6 +24,7 @@ import investmentRoutes from './investment.routes.js';
 import installmentRoutes from './installment.routes.js';
 import paymentRoutes from './payment.routes.js';
 import publicRoutes from './public.routes.js';
+import investorPortalRoutes from './investor-portal.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import reportRoutes from './report.routes.js';
 import auditRoutes from './audit.routes.js';
@@ -39,6 +41,7 @@ router.use('/investments', investmentRoutes);
 router.use('/installments', installmentRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/public', publicRoutes);
+router.use('/portal', investorPortalRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/reports', reportRoutes);
 router.use('/audit', auditRoutes);

@@ -49,6 +49,19 @@ export function testMessage() {
   return `Test message from ${SIGNATURE}. SMS configuration is working.`;
 }
 
+/**
+ * Portal login credentials. The password sits late in the message on purpose:
+ * provider console logs and short previews only ever show the first ~90 chars.
+ * sms_logs stores a redacted preview instead of this body (see sendRaw).
+ */
+export function portalCredentialsMessage({ name, memberCode, mobile, password, url }) {
+  return (
+    `Dear ${firstNameOnly(name)}, your investor portal account is ready. Visit ${url} and sign in ` +
+    `with mobile ${mobile} or member code ${memberCode}. Temporary password: ${password}. ` +
+    `Please change it after signing in. Do not share it. - ${SIGNATURE}`
+  );
+}
+
 export function renderTemplate(templateKey, data) {
   switch (templateKey) {
     case 'PAYMENT_LINK':
@@ -63,6 +76,8 @@ export function renderTemplate(templateKey, data) {
       return manualPaymentMessage(data);
     case 'TEST':
       return testMessage();
+    case 'PORTAL_CREDENTIALS':
+      return portalCredentialsMessage(data);
     default:
       throw new Error(`Unknown SMS template: ${templateKey}`);
   }

@@ -14,16 +14,11 @@ services:
     # 503 frontend. `NPM_CONFIG_PRODUCTION=false` guarantees dev deps are kept
     # for the build step even when NODE_ENV=production.
     buildCommand: npm ci && npm run build
-    # Use the explicit migrate + start sequence. Either:
-    #   * Pre-Deploy: `npm run migrate` and Start: `npm start` (preferred if
-    #     your plan exposes Pre-Deploy), or
-    #   * Start: `npm run migrate && npm start` when Pre-Deploy is unavailable.
-    # The blueprint below uses the simple start; override in the dashboard if
-    # you have Pre-Deploy.
-    startCommand: npm start
-    # If your Render plan supports PreDeploy, uncomment the next line and change
-    # startCommand to `npm start` alone:
-    # preDeployCommand: npm run migrate
+    # Migrations are additive and idempotent, so run them on every boot: this
+    # guarantees new schema (e.g. 002_investor_portal_login.sql) is applied
+    # before the server starts accepting traffic. If your Render plan exposes
+    # Pre-Deploy you can move `npm run migrate` there and start with `npm start`.
+    startCommand: npm run migrate && npm start
     healthCheckPath: /api/health
     autoDeploy: false
 

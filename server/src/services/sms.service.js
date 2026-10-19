@@ -47,7 +47,7 @@ function logToDb(entry) {
       entry.providerMessageId ?? null,
       entry.status ?? 'QUEUED',
       entry.templateKey ?? null,
-      entry.body.slice(0, 160),
+      (entry.bodyPreview ?? entry.body).slice(0, 160),
       entry.error ? String(entry.error).slice(0, 300) : null,
       entry.adminId ?? null,
     ],
@@ -59,12 +59,15 @@ function logToDb(entry) {
  * Never throws for provider failures - returns { ok:false, error } so bulk jobs
  * can continue and report a summary.
  */
-export async function sendRaw({ mobile, message, messageType, templateKey = null, installmentId = null, investorId = null, adminId = null, req = null, dryRun = null }) {
+export async function sendRaw({ mobile, message, messageType, templateKey = null, installmentId = null, investorId = null, adminId = null, req = null, dryRun = null, bodyPreview = null }) {
   const isDryRun = dryRun === null ? config.sms.dryRun : dryRun;
   if (!mobile) throw badRequest('Recipient mobile number is required');
   const entry = {
     mobile,
     body: message,
+    // Callers sending secrets (portal passwords) pass a redacted preview so
+    // neither sms_logs nor the in-memory debug outbox ever stores the secret.
+    bodyPreview: bodyPreview ?? undefined,
     messageType,
     templateKey,
     installmentId,
@@ -73,7 +76,7 @@ export async function sendRaw({ mobile, message, messageType, templateKey = null
     provider: provider.name,
     status: 'QUEUED',
   };
-  outboxCache.push({ ...entry, mobile: maskMobile(mobile), at: new Date().toISOString() });
+  outboxCache.push({ ...entry, body: bodyPreview ?? message, mobile: maskMobile(mobile), at: new Date().toISOString() });
   if (outboxCache.length > 100) outboxCache.shift();
 
   if (isDryRun && provider.name === 'console') {

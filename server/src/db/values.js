@@ -16,9 +16,11 @@ export const BOOLEAN_COLUMNS = new Set([
   'is_active',
   'totp_enabled',
   'must_change_password',
+  'portal_enabled',
   'has_nid',
   'has_photo',
   'has_nid_scan',
+  'has_portal_password',
   'pay_link_active',
 ]);
 

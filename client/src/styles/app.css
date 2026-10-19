@@ -269,3 +269,35 @@ td.mono { font-family: var(--mono); font-size: 0.8rem; }
   .sidebar .brand, .sidebar .sidebar-footer { display: none; }
   .sidebar nav { flex-direction: row; }
 }
+
+/* ---------- investor portal ---------- */
+.avatar {
+  width: 34px; height: 34px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--brand); color: #fff; font-weight: 700; font-size: 0.8rem;
+  display: grid; place-items: center;
+}
+.avatar.big { width: 56px; height: 56px; font-size: 1.15rem; }
+
+.progress {
+  height: 9px; border-radius: 99px; background: var(--muted-bg);
+  overflow: hidden; border: 1px solid var(--border);
+}
+.progress > span {
+  display: block; height: 100%; border-radius: 99px;
+  background: linear-gradient(90deg, #15803d, #22c55e);
+  transition: width 0.4s ease;
+}
+
+/* Green account-summary card (the "wallet" style card on the member profile). */
+.summary-card {
+  background: linear-gradient(150deg, #14532d 0%, #166534 55%, #15803d 100%);
+  color: #ecfdf5; border: none;
+}
+.summary-card h2 { color: #fff; }
+.summary-card .muted-on-dark { color: #a7f3c9; font-size: 0.82rem; }
+.summary-big { font-size: 2rem; font-weight: 800; color: #fff; margin: 2px 0 12px; }
+.summary-rows { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
+.summary-rows > div { display: flex; flex-direction: column; }
+.summary-rows span { font-size: 0.76rem; opacity: 0.85; }
+.summary-rows strong { font-size: 1rem; }
+.summary-rows.dark-text span { opacity: 1; }

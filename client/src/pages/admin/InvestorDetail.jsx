@@ -83,6 +83,10 @@ export function InvestorDetail() {
       <div className="inline" style={{ marginBottom: 14 }}>
         <h1 style={{ margin: 0 }}>{investor.name}</h1>
         <Badge status={investor.status} />
+        <span className="badge info mono">{investor.member_code}</span>
+        <span className="small muted">
+          Portal last login: {investor.last_login_at ? formatDateTime(investor.last_login_at) : 'Never'}
+        </span>
         {investor.deleted_at ? <span className="badge danger">Deleted {formatDate(investor.deleted_at)}</span> : null}
         <div className="spacer" />
         {atLeast('ACCOUNTANT') ? (
@@ -124,6 +128,56 @@ export function InvestorDetail() {
               <div className="muted">Address</div>
               <div>{investor.address || '—'}</div>
             </div>
+            {investor.email ? (
+              <div>
+                <div className="muted">Email</div>
+                <div>{investor.email}</div>
+              </div>
+            ) : null}
+            {investor.alternate_mobile ? (
+              <div>
+                <div className="muted">Alternate mobile</div>
+                <div className="mono">{isSuperAdmin ? investor.alternate_mobile : maskMobile(investor.alternate_mobile)}</div>
+              </div>
+            ) : null}
+            {investor.date_of_birth || investor.gender ? (
+              <div>
+                <div className="muted">Date of birth · Gender</div>
+                <div>
+                  {investor.date_of_birth ? formatDate(investor.date_of_birth) : '—'}
+                  {investor.gender ? ` · ${investor.gender}` : ''}
+                </div>
+              </div>
+            ) : null}
+            {investor.father_name || investor.mother_name ? (
+              <div>
+                <div className="muted">Father / husband · Mother</div>
+                <div>
+                  {investor.father_name || '—'} · {investor.mother_name || '—'}
+                </div>
+              </div>
+            ) : null}
+            {investor.religion || investor.education ? (
+              <div>
+                <div className="muted">Religion · Education</div>
+                <div>
+                  {investor.religion || '—'}
+                  {investor.education ? ` · ${investor.education}` : ''}
+                </div>
+              </div>
+            ) : null}
+            {investor.present_address ? (
+              <div>
+                <div className="muted">Present address</div>
+                <div>{investor.present_address}</div>
+              </div>
+            ) : null}
+            {investor.permanent_address ? (
+              <div>
+                <div className="muted">Permanent address</div>
+                <div>{investor.permanent_address}</div>
+              </div>
+            ) : null}
             <div>
               <div className="muted">NID</div>
               {isSuperAdmin ? (
@@ -266,6 +320,8 @@ export function InvestorDetail() {
             </p>
           )}
         </Card>
+
+        <PortalAccessCard investorId={id} canManage={atLeast('ACCOUNTANT')} />
       </div>
 
       <Tabs
@@ -456,5 +512,227 @@ export function ManualPaymentModal({ installment, onClose, onDone }) {
         </div>
       </form>
     </Modal>
+  );
+}
+
+/**
+ * Investor self-service portal access: status, temporary password issue/reset,
+ * enable/disable and session revoke. The plaintext password is shown exactly
+ * once (here) so staff can hand it over; it is never retrievable afterwards.
+ */
+function PortalAccessCard({ investorId, canManage }) {
+  const toast = useToast();
+  const { data, loading, error, reload } = useApi(() => investorsApi.portalAccess(investorId), [investorId]);
+  const [passwordModal, setPasswordModal] = useState(false);
+  const [mode, setMode] = useState('generate');
+  const [customPassword, setCustomPassword] = useState('');
+  const [sendSms, setSendSms] = useState(false);
+  const [issued, setIssued] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  if (loading) {
+    return (
+      <Card title="🔐 Portal access">
+        <Spinner />
+      </Card>
+    );
+  }
+  if (error || !data?.portal) {
+    return (
+      <Card title="🔐 Portal access">
+        <Alert tone="error">{error?.message ?? 'Could not load portal status'}</Alert>
+      </Card>
+    );
+  }
+  const portal = data.portal;
+  const locked = portal.locked_until && new Date(portal.locked_until) > new Date();
+
+  const run = async (fn, successMessage) => {
+    setBusy(true);
+    try {
+      const result = await fn();
+      if (successMessage) toast.success(successMessage);
+      reload();
+      return result;
+    } catch (err) {
+      toast.error(err.message);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitPassword = async (event) => {
+    event.preventDefault();
+    const result = await run(() =>
+      investorsApi.setPortalPassword(investorId, {
+        password: mode === 'custom' ? customPassword : undefined,
+        sendSms,
+      }),
+    );
+    if (result) {
+      setIssued(result);
+      toast.success('Portal password set - share it with the investor now (shown once)');
+    }
+  };
+
+  return (
+    <Card title="🔐 Portal access (investor login)">
+      <div className="stack small">
+        <div className="inline">
+          {portal.portal_enabled ? (
+            <span className="badge ok">Enabled</span>
+          ) : portal.has_password ? (
+            <span className="badge muted">Disabled</span>
+          ) : (
+            <span className="badge warn">Not set up</span>
+          )}
+          {portal.must_change_password ? <span className="badge warn">Temporary password</span> : null}
+          {locked ? <span className="badge danger">Locked until {formatDateTime(portal.locked_until)}</span> : null}
+        </div>
+        <div>
+          <div className="muted">Login id (either works)</div>
+          <div>
+            Mobile <span className="mono">{portal.mobile}</span> · Member code <span className="mono">{portal.member_code}</span>
+          </div>
+        </div>
+        <div>
+          <div className="muted">Login page</div>
+          <div className="inline">
+            <span className="mono small">{portal.login_url}</span>
+            <Button
+              className="sm ghost"
+              onClick={() => {
+                navigator.clipboard?.writeText(portal.login_url);
+                toast.success('Login URL copied');
+              }}
+            >
+              Copy
+            </Button>
+          </div>
+        </div>
+        <div>
+          <div className="muted">Last login</div>
+          <div>{portal.last_login_at ? formatDateTime(portal.last_login_at) : 'Never'}</div>
+        </div>
+        <div>
+          <div className="muted">Active sessions</div>
+          <div>
+            {portal.active_sessions}
+            {portal.failed_login_count ? ` · ${portal.failed_login_count} recent failed attempt(s)` : ''}
+          </div>
+        </div>
+      </div>
+
+      {canManage ? (
+        <div className="inline" style={{ marginTop: 12 }}>
+          <Button
+            className="sm primary"
+            disabled={busy}
+            onClick={() => {
+              setIssued(null);
+              setCustomPassword('');
+              setPasswordModal(true);
+            }}
+          >
+            {portal.has_password ? 'Reset password' : 'Set password & enable'}
+          </Button>
+          {portal.has_password ? (
+            portal.portal_enabled ? (
+              <ConfirmButton
+                className="btn sm"
+                confirmText="Confirm disable"
+                onConfirm={() => run(() => investorsApi.setPortalEnabled(investorId, false), 'Portal access disabled')}
+              >
+                Disable
+              </ConfirmButton>
+            ) : (
+              <Button className="sm" disabled={busy} onClick={() => run(() => investorsApi.setPortalEnabled(investorId, true), 'Portal access enabled')}>
+                Enable
+              </Button>
+            )
+          ) : null}
+          {portal.active_sessions > 0 ? (
+            <Button
+              className="sm ghost"
+              disabled={busy}
+              onClick={() => run(() => investorsApi.revokePortalSessions(investorId), 'Investor signed out everywhere')}
+            >
+              Sign out everywhere
+            </Button>
+          ) : null}
+        </div>
+      ) : (
+        <p className="muted small" style={{ marginTop: 10 }}>Viewer role cannot manage portal access.</p>
+      )}
+
+      {passwordModal ? (
+        <Modal title={portal.has_password ? 'Reset portal password' : 'Set portal password'} onClose={() => setPasswordModal(false)}>
+          {issued ? (
+            <>
+              <Alert tone="ok">Temporary password set. It is shown <strong>only now</strong> - it cannot be viewed again.</Alert>
+              <div className="muted small">Temporary password</div>
+              <div className="code-box">{issued.tempPassword}</div>
+              <p className="small">
+                Login page: <span className="mono">{issued.portal.login_url}</span>
+                <br />
+                Login id: mobile <span className="mono">{issued.portal.mobile}</span> or member code{' '}
+                <span className="mono">{issued.portal.member_code}</span>
+                <br />
+                {issued.sms ? (issued.sms.sent ? '✓ Credentials also sent by SMS.' : '⚠ SMS was not delivered - please share the password another way.') : null}
+                <br />
+                The investor must change this password at first sign-in.
+              </p>
+              <div className="inline" style={{ justifyContent: 'flex-end' }}>
+                <Button
+                  className="sm"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(issued.tempPassword);
+                    toast.success('Password copied');
+                  }}
+                >
+                  Copy password
+                </Button>
+                <Button className="sm primary" onClick={() => setPasswordModal(false)}>
+                  Done
+                </Button>
+              </div>
+            </>
+          ) : (
+            <form onSubmit={submitPassword}>
+              <label className="inline small" style={{ display: 'flex', marginBottom: 8 }}>
+                <input type="radio" name="pw-mode" checked={mode === 'generate'} onChange={() => setMode('generate')} />
+                Auto-generate a temporary password (recommended)
+              </label>
+              <label className="inline small" style={{ display: 'flex', marginBottom: 8 }}>
+                <input type="radio" name="pw-mode" checked={mode === 'custom'} onChange={() => setMode('custom')} />
+                I will type a temporary password
+              </label>
+              {mode === 'custom' ? (
+                <Field label="Temporary password" hint="At least 8 characters with a letter and a digit; not the mobile number or member code.">
+                  <Input required value={customPassword} onChange={setCustomPassword} autoComplete="new-password" />
+                </Field>
+              ) : null}
+              <label className="inline small">
+                <input type="checkbox" checked={sendSms} onChange={(e) => setSendSms(e.target.checked)} /> Send credentials
+                by SMS to {portal.mobile}
+              </label>
+              <p className="muted small" style={{ marginTop: 10 }}>
+                Setting a password enables portal access, signs the investor out everywhere, clears any lock, and
+                forces a password change at first sign-in.
+              </p>
+              <div className="inline" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
+                <Button type="button" className="sm" onClick={() => setPasswordModal(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" variant="primary" size="sm" disabled={busy}>
+                  {busy ? 'Saving…' : portal.has_password ? 'Reset password' : 'Set password & enable'}
+                </Button>
+              </div>
+            </form>
+          )}
+        </Modal>
+      ) : null}
+    </Card>
   );
 }

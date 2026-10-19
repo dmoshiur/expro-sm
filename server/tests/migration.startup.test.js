@@ -21,6 +21,7 @@ const { runMigrations, appliedMigrations, MIGRATIONS_DIR } = await import('../sr
 const { runDbCheck } = await import('../src/db/check.js');
 const { logger } = await import('../src/utils/logger.js');
 const initial = '001_turso_initial_schema.sql';
+const allMigrations = [initial, '002_investor_portal_login.sql'];
 
 beforeEach(async () => {
   await connectDatabase();
@@ -65,7 +66,7 @@ function boot({ migrate = false, listen = false } = {}) {
 test('empty database: read-only startup reports pending, metadata bootstrap is idempotent', async () => {
   const child = await boot();
   assert.equal(child.code, 1);
-  assert.match(child.output, /Database schema is missing 1 migration/);
+  assert.match(child.output, /Database schema is missing 2 migration/);
   assert.doesNotMatch(child.output, /database query failed/);
   assert.equal(await exists('schema_migrations'), false, 'verify-only path must not mutate');
   assert.deepEqual(await appliedMigrations(), []);
@@ -73,13 +74,13 @@ test('empty database: read-only startup reports pending, metadata bootstrap is i
   const columns = (await query("PRAGMA table_info('schema_migrations')")).rows.map((c) => c.name);
   assert.deepEqual(columns, ['filename', 'checksum', 'applied_at', 'duration_ms']);
   const result = await runMigrations();
-  assert.deepEqual(result.applied, [initial]);
+  assert.deepEqual(result.applied, allMigrations);
   const history = await appliedMigrations();
   assert.equal(history[0].filename, initial);
   assert.match(history[0].checksum, /^[a-f0-9]{64}$/);
   assert.ok(history[0].applied_at instanceof Date);
   assert.equal(await probeForeignKeys(), 'enforced');
-  for (const name of ['admins', 'sessions', 'investors', 'nominees', 'investments', 'installments', 'payments', 'audit_logs', 'sms_logs', 'job_runs']) {
+  for (const name of ['admins', 'sessions', 'investor_sessions', 'investors', 'nominees', 'investments', 'installments', 'payments', 'audit_logs', 'sms_logs', 'job_runs']) {
     assert.equal(await exists(name), true, name);
   }
 });
@@ -109,10 +110,10 @@ test('initialized schema and all protected data remain identical after rerun/rec
   const tables = ['admins', 'sessions', 'investors', 'investments', 'installments', 'nominees', 'payments', 'audit_logs', 'schema_migrations'];
   const snapshot = async () => Promise.all(tables.map(async (t) => (await query(`SELECT * FROM ${t}`)).rows));
   const original = await snapshot();
-  assert.deepEqual((await runMigrations()).skipped, [initial]);
+  assert.deepEqual((await runMigrations()).skipped, allMigrations);
   closeDatabase();
   await connectDatabase();
-  assert.deepEqual((await runMigrations()).skipped, [initial]);
+  assert.deepEqual((await runMigrations()).skipped, allMigrations);
   assert.deepEqual(await snapshot(), original);
   const check = await runDbCheck({ write: () => {} });
   assert.deepEqual(check.pending, []);
@@ -170,7 +171,7 @@ test('existing application tables without history require review, never automati
 
 test('empty database db:check reports pending without probing nonexistent app tables', async () => {
   const check = await runDbCheck({ write: () => {} });
-  assert.deepEqual(check.pending, [initial]);
+  assert.deepEqual(check.pending, allMigrations);
   assert.equal(check.foreignKeys, 'unknown');
   assert.equal(await exists('schema_migrations'), false);
   assert.equal(await exists('txn_scope'), false);

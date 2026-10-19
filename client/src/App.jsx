@@ -1,8 +1,10 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext.jsx';
+import { InvestorAuthProvider } from './context/InvestorAuthContext.jsx';
 import { ToastProvider } from './context/ToastContext.jsx';
 import { Layout } from './components/Layout.jsx';
 import { ProtectedRoute } from './routes/ProtectedRoute.jsx';
+import { InvestorProtectedRoute } from './routes/InvestorProtectedRoute.jsx';
 
 import { Login } from './pages/admin/Login.jsx';
 import { Dashboard } from './pages/admin/Dashboard.jsx';
@@ -26,6 +28,24 @@ import { NotFound } from './pages/NotFound.jsx';
 import { PayPage } from './pages/public/PayPage.jsx';
 import { PayResultPage } from './pages/public/PayResultPage.jsx';
 
+import { PortalLogin } from './pages/portal/PortalLogin.jsx';
+import { PortalLayout } from './pages/portal/PortalLayout.jsx';
+import { PortalDashboard } from './pages/portal/PortalDashboard.jsx';
+import { PortalProfile } from './pages/portal/PortalProfile.jsx';
+import { PortalInvestments } from './pages/portal/PortalInvestments.jsx';
+import { PortalInstallments } from './pages/portal/PortalInstallments.jsx';
+import { PortalPayments } from './pages/portal/PortalPayments.jsx';
+import { PortalAccount } from './pages/portal/PortalAccount.jsx';
+
+/** Investor portal subtree gets its own auth provider (separate session). */
+function PortalShell() {
+  return (
+    <InvestorAuthProvider>
+      <Outlet />
+    </InvestorAuthProvider>
+  );
+}
+
 export default function App() {
   return (
     <ToastProvider>
@@ -37,6 +57,25 @@ export default function App() {
           <Route path="/pay/result" element={<PayResultPage />} />
 
           <Route path="/login" element={<Login />} />
+
+          {/* Investor self-service portal (investor session, own data only) */}
+          <Route element={<PortalShell />}>
+            <Route path="/portal/login" element={<PortalLogin />} />
+            <Route
+              element={
+                <InvestorProtectedRoute>
+                  <PortalLayout />
+                </InvestorProtectedRoute>
+              }
+            >
+              <Route path="/portal" element={<PortalDashboard />} />
+              <Route path="/portal/profile" element={<PortalProfile />} />
+              <Route path="/portal/investments" element={<PortalInvestments />} />
+              <Route path="/portal/installments" element={<PortalInstallments />} />
+              <Route path="/portal/payments" element={<PortalPayments />} />
+              <Route path="/portal/account" element={<PortalAccount />} />
+            </Route>
+          </Route>
 
           <Route
             element={

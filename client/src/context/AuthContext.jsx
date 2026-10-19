@@ -1,6 +1,6 @@
 /** Auth context: current admin, session bootstrap, login/logout, role checks. */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { authApi, setUnauthorizedHandler } from '../services/api.js';
+import { authApi, onUnauthorized } from '../services/api.js';
 
 const AuthContext = createContext(null);
 
@@ -23,8 +23,10 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    setUnauthorizedHandler(() => {
-      setAdmin(null);
+    // Only admin-area 401s clear the admin; investor-portal 401s are handled
+    // by InvestorAuthContext and must not sign an admin out (and vice versa).
+    return onUnauthorized((_error, path) => {
+      if (!String(path).startsWith('/portal')) setAdmin(null);
     });
   }, []);
 

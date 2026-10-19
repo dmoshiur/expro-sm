@@ -28,9 +28,9 @@ export const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 64, saltBytes: 16 };
 const SCRYPT_MAXMEM = 256 * 1024 * 1024;
 
 /** Returns `scrypt$N$r$p$saltHex$hashHex` (self-describing, upgrade-friendly). */
-export async function hashPassword(password, params = SCRYPT) {
-  if (typeof password !== 'string' || password.length < 12) {
-    throw new AppError(400, 'WEAK_PASSWORD', 'Password must be at least 12 characters');
+export async function hashPassword(password, params = SCRYPT, { minLength = 12 } = {}) {
+  if (typeof password !== 'string' || password.length < minLength) {
+    throw new AppError(400, 'WEAK_PASSWORD', `Password must be at least ${minLength} characters`);
   }
   const salt = randomBytes(params.saltBytes);
   const derived = await scrypt(password, salt, params.keylen, { N: params.N, r: params.r, p: params.p, maxmem: SCRYPT_MAXMEM });
@@ -87,6 +87,76 @@ export function assertPasswordPolicy(password, { email, name } = {}) {
     });
   }
   return true;
+}
+
+/**
+ * Investor-portal password policy. Deliberately lighter than the admin policy
+ * (investors type on phones, often with low digital literacy) but still safe:
+ * at least 8 characters with a letter and a digit, never the mobile number,
+ * the member code, the investor's own name or a well-known weak password.
+ * Admin-set passwords are temporary (must_change_password) on top of this.
+ */
+export const INVESTOR_PASSWORD_MIN_LENGTH = 8;
+export const INVESTOR_PASSWORD_MAX_LENGTH = 200;
+
+const COMMON_INVESTOR_PASSWORDS = new Set([
+  'password', 'password1', 'passw0rd', '12345678', '123456789', '1234567890',
+  'qwerty123', '11111111', '00000000', 'bangladesh', 'dhaka123', 'investor',
+  'investor1', 'bkash123',
+]);
+
+export function assertInvestorPasswordPolicy(password, { mobile, memberCode, name } = {}) {
+  const value = typeof password === 'string' ? password : '';
+  const missing = [];
+  const forbidden = [];
+  if (value.length < INVESTOR_PASSWORD_MIN_LENGTH) missing.push(`at least ${INVESTOR_PASSWORD_MIN_LENGTH} characters`);
+  if (value.length > INVESTOR_PASSWORD_MAX_LENGTH) missing.push(`at most ${INVESTOR_PASSWORD_MAX_LENGTH} characters`);
+  if (value && !/[a-z]/i.test(value)) missing.push('a letter');
+  if (value && !/\d/.test(value)) missing.push('a digit');
+
+  const lower = value.toLowerCase();
+  if (mobile && lower === String(mobile).toLowerCase()) forbidden.push('your mobile number');
+  if (mobile && lower.includes(String(mobile))) forbidden.push('your mobile number');
+  const code = memberCode ? String(memberCode).toLowerCase() : null;
+  const codeDigits = code ? code.replace(/\D/g, '') : null;
+  if (code && (lower === code || (codeDigits && lower === codeDigits))) forbidden.push('your member code');
+  if (name && String(name).trim().length >= 4 && lower.includes(String(name).trim().toLowerCase())) {
+    forbidden.push('your name');
+  }
+  if (COMMON_INVESTOR_PASSWORDS.has(lower)) forbidden.push('a very common password');
+
+  if (missing.length || forbidden.length) {
+    const parts = [];
+    if (missing.length) parts.push(`it must contain ${missing.join(', ')}`);
+    if (forbidden.length) parts.push(`it must not be ${forbidden.join(' or ')}`);
+    throw new AppError(422, 'WEAK_PASSWORD', `Password is not strong enough: ${parts.join('; ')}.`, {
+      missing,
+      forbidden,
+    });
+  }
+  return true;
+}
+
+const TEMP_PASSWORD_WORDS = [
+  'Mango', 'River', 'Lotus', 'Paddy', 'Sonali', 'Rupali', 'Sagar', 'Akash',
+  'Batas', 'Nodi', 'Ful', 'Chad', 'Tara', 'Desh', 'Mati', 'Shobuj',
+  'Halda', 'Jamuna', 'Padma', 'Meghna', 'Karni', 'Sheetal', 'Uttara', 'Dakshin',
+];
+
+/**
+ * Human-friendly one-time password for admin-issued portal access,
+ * e.g. "Padma-7391!". Easy to read out or send by SMS; the investor must
+ * replace it at first login (must_change_password), so its lifetime is short.
+ */
+export function generateTempPassword() {
+  const pick = (max) => {
+    const buf = randomBytes(4);
+    return buf.readUInt32BE(0) % max;
+  };
+  const word = TEMP_PASSWORD_WORDS[pick(TEMP_PASSWORD_WORDS.length)];
+  const digits = String(1000 + pick(9000));
+  const symbol = '!@#*'[pick(4)];
+  return `${word}-${digits}${symbol}`;
 }
 
 // ---------------------------------------------------------------------------

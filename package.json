@@ -2,7 +2,7 @@
   "name": "investor-portal",
   "version": "1.0.0",
   "private": true,
-  "description": "Investor Installment Portal - admin-only installment collection with bKash payment links, SMS reminders and audit trail. Single Node process serves the API and the built React app.",
+  "description": "Investor Installment Portal - installment collection with bKash payment links, SMS reminders, audit trail and an investor self-service portal (login, dues, profile, Pay now). Single Node process serves the API and the built React app.",
   "type": "module",
   "engines": {
     "node": ">=22.9.0"
