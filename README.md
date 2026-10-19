@@ -51,6 +51,7 @@ node -e "console.log('ENCRYPTION_KEY=' + require('crypto').randomBytes(32).toStr
 npm run migrate    # applies server/src/db/migrations/*.sql in order
 npm run db:check   # verifies migration state and invariants
 npm run seed       # first SUPER_ADMIN (+ sample data; see --no-sample)
+npm run reset-admin # force-reset an admin password from SEED_* (locked-out recovery)
 npm run build      # builds the SPA into client/dist
 npm start          # http://localhost:3000  (API + SPA, one process)
 ```
@@ -75,6 +76,30 @@ Every seeded admin starts with `must_change_password = true`; the portal forces
 a password change before anything else, and password policy rejects common
 passwords and anything containing the admin's own name or email local part.
 
+### Locked out of the Super Admin account? (“Invalid email or password”)
+
+Changing `SEED_SUPER_ADMIN_PASSWORD` in the hosting dashboard used to have no
+effect on an account that already existed — the stored hash was never updated.
+Now the env values are **synced, not just seeded once**:
+
+1. Set `SEED_SUPER_ADMIN_EMAIL` and `SEED_SUPER_ADMIN_PASSWORD` in the Render
+   dashboard (password: at least 12 characters with an uppercase letter, a
+   lowercase letter, a digit and a symbol, and not containing the email’s
+   name part). Emails are matched trimmed + lower-cased and passwords trimmed,
+   so stray spaces from copy-paste are harmless.
+2. Redeploy (or restart) the service. On startup the server creates the
+   account when missing and re-hashes the password whenever it no longer
+   verifies against the env value — check the deploy log for
+   `seed super admin password updated…` (or `…already in sync…`).
+3. Log in, then **change the password in the app and remove the `SEED_*`
+   variables** from Render (or set `SEED_SUPER_ADMIN_ON_START=false`), so a
+   later restart cannot reset it back.
+
+No restart possible? From the Render **Shell** (service env vars are already
+loaded): `npm run reset-admin` force-resets the same account (or any admin via
+`-- --email you@example.com`), clears lockouts and revokes old sessions.
+`npm run seed` applies the same verify-then-re-hash sync to all seeded admins.
+
 ## Configuration (`.env`)
 
 `server/src/config/index.js` reads the environment **once at startup** and
@@ -93,6 +118,7 @@ does the same checks without starting the server.
 | Payments | `PAYMENT_PROVIDER`, `BKASH_*`, `PAYMENTS_WEBHOOK_ENABLED`, `PAYMENTS_WEBHOOK_SECRET`, `RECONCILE_STUCK_AFTER_MINUTES` | `PAYMENT_PROVIDER=mock` runs the whole flow offline |
 | SMS | `SMS_PROVIDER` (`console`\|`bulksmsbd`\|`generic`), `SMS_API_URL`, `SMS_API_KEY`, `SMS_SENDER_ID`, `SMS_DRY_RUN` | `console` logs masked messages instead of sending |
 | Jobs | `JOBS_ENABLED`, `JOB_OVERDUE_AT`, `JOB_REMINDERS_AT`, `JOB_RECONCILE_EVERY_MINUTES`, `REMINDER_DAYS_BEFORE`, `OVERDUE_REMINDER_INTERVAL_HOURS` | times are Asia/Dhaka (UTC+6, no DST) |
+| Seed / bootstrap | `SEED_SUPER_ADMIN_NAME`, `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD`, `SEED_SUPER_ADMIN_ON_START` (default `true`) | while email + password are set, every startup syncs that Super Admin (create when missing, re-hash on mismatch); remove after first login — see “Locked out…” above |
 | Misc | `TOTP_ISSUER`, `TOTP_WINDOW`, `MAX_UPLOAD_BYTES`, `MASK_LOGS` | `TOTP_ISSUER` is also the business name printed on the public pay page and receipts |
 
 Uploads: investor photos are ≤ `MAX_UPLOAD_BYTES` (default 2 MiB, JPEG/PNG) and

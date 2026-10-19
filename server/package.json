@@ -10,6 +10,7 @@
     "dev": "node --watch --env-file-if-exists=../.env server.js",
     "migrate": "node --env-file-if-exists=../.env src/db/migrate.js",
     "seed": "node --env-file-if-exists=../.env src/db/seed.js",
+    "reset-admin": "node --env-file-if-exists=../.env src/db/reset-admin.js",
     "db:check": "node --env-file-if-exists=../.env src/db/check.js"
   },
   "dependencies": {

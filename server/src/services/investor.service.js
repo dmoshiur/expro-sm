@@ -13,6 +13,7 @@ import { query, withTransaction } from '../db/client.js';
 import { NOW } from '../db/sql.js';
 import { AppError, badRequest, conflict, notFound } from '../utils/errors.js';
 import { maskInvestor, maskMobile, maskNominee, firstNameOnly } from '../utils/mask.js';
+import { normalizePasswordInput } from '../utils/validate.js';
 import {
   INVESTOR_PASSWORD_MIN_LENGTH,
   assertInvestorPasswordPolicy,
@@ -149,7 +150,7 @@ export async function createInvestor(data, actor, req) {
   // caller can show / SMS it. It is never persisted or written to the audit log.
   let portalSetup = null;
   if (portal?.enabled) {
-    const tempPassword = portal.password ? String(portal.password) : generateTempPassword();
+    const tempPassword = portal.password ? normalizePasswordInput(portal.password) : generateTempPassword();
     assertInvestorPasswordPolicy(tempPassword, { mobile, name });
     portalSetup = {
       tempPassword,

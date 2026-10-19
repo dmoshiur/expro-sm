@@ -8,9 +8,12 @@
  *   3. confirm the schema is up to date. Migrations are NOT applied silently in
  *      production: run `npm run migrate` explicitly. DB_MIGRATE_ON_START=true opts
  *      in to applying them at boot (additive, checksum-protected, idempotent).
- *   4. start the in-process job scheduler (Asia/Dhaka aware, idempotent)
- *   5. listen on BIND_HOST:PORT (Render sets PORT) and serve API + built SPA
- *   6. graceful shutdown on SIGTERM/SIGINT (drain, close the database, stop jobs)
+ *   4. sync the seed Super Admin from SEED_SUPER_ADMIN_* when both variables are
+ *      set (create when missing; re-hash the password when it no longer verifies
+ *      against the env value) - see auth.service syncSuperAdminFromEnv
+ *   5. start the in-process job scheduler (Asia/Dhaka aware, idempotent)
+ *   6. listen on BIND_HOST:PORT (Render sets PORT) and serve API + built SPA
+ *   7. graceful shutdown on SIGTERM/SIGINT (drain, close the database, stop jobs)
  */
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
@@ -20,6 +23,7 @@ import { createApp, CLIENT_DIST } from './src/app.js';
 import { logger } from './src/utils/logger.js';
 import { connectDatabase, closeDatabase, probeForeignKeys } from './src/db/client.js';
 import { runMigrations } from './src/db/migrate.js';
+import { syncSuperAdminFromEnv } from './src/services/auth.service.js';
 import { startScheduler, stopScheduler } from './src/jobs/scheduler.js';
 
 const SHUTDOWN_TIMEOUT_MS = 15_000;
@@ -53,6 +57,20 @@ async function main() {
 
   const fk = await probeForeignKeys();
   logger.info('database foreign keys', { enforcement: fk });
+
+  // Seed Super Admin sync from SEED_SUPER_ADMIN_EMAIL / SEED_SUPER_ADMIN_PASSWORD.
+  // Runs before listen() so the very first login after a (re)deploy already uses
+  // the env credentials. A failure (e.g. a password that violates the policy)
+  // must never take the whole site down: it is logged loudly and the operator
+  // can fix the variable / run `npm run reset-admin` instead.
+  try {
+    await syncSuperAdminFromEnv();
+  } catch (err) {
+    logger.error(
+      'seed super admin sync failed - check SEED_SUPER_ADMIN_* (password policy: at least 12 chars with upper, lower, digit and symbol, not containing the email name) or run "npm run reset-admin" from the Render Shell',
+      { err },
+    );
+  }
 
   if (config.isProd) {
     if (config.payments.provider === 'mock') {

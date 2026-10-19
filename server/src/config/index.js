@@ -134,6 +134,21 @@ function loadConfig(env = process.env) {
       issuer: str(env, 'TOTP_ISSUER', 'Investor Installment Portal'),
       window: int(env, 'TOTP_WINDOW', 1),
     },
+
+    seed: {
+      // Super Admin bootstrap from the environment (SEED_SUPER_ADMIN_*).
+      // Values are normalised here (str() trims) so a padded / mixed-case
+      // email pasted into the Render dashboard still matches the login form.
+      superAdminName: str(env, 'SEED_SUPER_ADMIN_NAME', 'Super Admin'),
+      superAdminEmail: str(env, 'SEED_SUPER_ADMIN_EMAIL')?.toLowerCase(),
+      superAdminPassword: str(env, 'SEED_SUPER_ADMIN_PASSWORD'),
+      // While BOTH values are present the server syncs that account at boot:
+      // creates it when missing and re-hashes its password whenever the env
+      // password no longer verifies (see auth.service syncSuperAdminFromEnv).
+      // Remove the SEED_* variables (or set this to false) after the first
+      // successful login so the in-app password change is never overwritten.
+      syncOnStart: bool(env, 'SEED_SUPER_ADMIN_ON_START', true),
+    },
   };
 
   return cfg;

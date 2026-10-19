@@ -43,7 +43,9 @@ async function fixture() {
 function boot({ migrate = false, listen = false } = {}) {
   return new Promise((resolveBoot, reject) => {
     const child = spawn(process.execPath, ['server/server.js'], {
-      cwd: resolve('.'), env: { ...process.env, DB_MIGRATE_ON_START: String(migrate), LOG_LEVEL: 'info', PORT: '0' },
+      // Startup seed sync is disabled: these tests assert boot never mutates
+      // protected data, and a developer .env must not leak SEED_* into them.
+      cwd: resolve('.'), env: { ...process.env, DB_MIGRATE_ON_START: String(migrate), LOG_LEVEL: 'info', PORT: '0', SEED_SUPER_ADMIN_ON_START: 'false' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';

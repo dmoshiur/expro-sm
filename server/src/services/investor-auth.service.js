@@ -18,7 +18,7 @@ import { NOW } from '../db/sql.js';
 import { config } from '../config/index.js';
 import { AppError, badRequest, forbidden, notFound, unauthorized } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
-import { normalizeBdMobile } from '../utils/validate.js';
+import { normalizeBdMobile, normalizePasswordInput } from '../utils/validate.js';
 import { maskMobile } from '../utils/mask.js';
 import {
   INVESTOR_PASSWORD_MIN_LENGTH,
@@ -96,16 +96,19 @@ async function getInvestorRow(id, client = undefined) {
 // ---------------------------------------------------------------------------
 export async function login({ loginId, password }, req) {
   const genericError = unauthorized('Invalid mobile number / member code or password');
+  // parseLoginId() already trims the login id; the password is trimmed here
+  // too so service callers agree with the HTTP validator (see validate.js).
+  const normalizedPassword = normalizePasswordInput(password);
   const investor = await findInvestorByLoginId(loginId);
 
   if (!investor || !investor.password_hash) {
     // Burn comparable time so unknown/unset accounts are not obviously faster.
-    await verifyPassword(String(password ?? ''), 'scrypt$16384$8$1$00$00');
+    await verifyPassword(normalizedPassword, 'scrypt$16384$8$1$00$00');
     await audit.record({
       action: audit.AUDIT_ACTIONS.INVESTOR_LOGIN_FAILED,
       entity: 'investor',
       entityId: investor?.id ?? null,
-      meta: { reason: investor ? 'NO_PORTAL_PASSWORD' : 'UNKNOWN_LOGIN_ID', loginId: String(loginId ?? '').slice(0, 40) },
+      meta: { reason: investor ? 'NO_PORTAL_PASSWORD' : 'UNKNOWN_LOGIN_ID', loginId: String(loginId ?? '').trim().slice(0, 40) },
       req,
     });
     await delay(LOGIN_DELAY_MS);
@@ -123,7 +126,7 @@ export async function login({ loginId, password }, req) {
     throw new AppError(423, 'ACCOUNT_LOCKED', 'Account temporarily locked after repeated failed logins. Try again later or contact the office.');
   }
 
-  const passwordOk = await verifyPassword(String(password ?? ''), investor.password_hash);
+  const passwordOk = await verifyPassword(normalizedPassword, investor.password_hash);
   if (!passwordOk) {
     const failures = investor.failed_login_count + 1;
     const lock = failures >= config.security.investorLockoutThreshold;
@@ -356,17 +359,19 @@ export async function countActiveInvestorSessions(investorId, client = undefined
 export async function changeOwnPassword(investorId, { currentPassword, newPassword }, req) {
   const investor = await getInvestorRow(investorId);
   if (!investor) throw notFound('Investor not found');
-  const ok = await verifyPassword(String(currentPassword ?? ''), investor.password_hash);
+  const current = normalizePasswordInput(currentPassword);
+  const next = normalizePasswordInput(newPassword);
+  const ok = await verifyPassword(current, investor.password_hash);
   if (!ok) throw unauthorized('Current password is incorrect');
-  if (await verifyPassword(String(newPassword ?? ''), investor.password_hash)) {
+  if (await verifyPassword(next, investor.password_hash)) {
     throw badRequest('New password must be different from the current password');
   }
-  assertInvestorPasswordPolicy(newPassword, {
+  assertInvestorPasswordPolicy(next, {
     mobile: investor.mobile,
     memberCode: investor.member_code,
     name: investor.name,
   });
-  const passwordHash = await hashPassword(newPassword, undefined, { minLength: INVESTOR_PASSWORD_MIN_LENGTH });
+  const passwordHash = await hashPassword(next, undefined, { minLength: INVESTOR_PASSWORD_MIN_LENGTH });
   await query(
     `update investors set password_hash = ?2, password_changed_at = ${NOW}, must_change_password = false,
        failed_login_count = 0, locked_until = null where id = ?1`,
@@ -430,7 +435,7 @@ export async function setPortalPasswordByAdmin(investorId, { password = null } =
   if (investor.deleted_at) throw badRequest('Investor is deleted; restore it before enabling portal access');
 
   const generated = !password;
-  const tempPassword = generated ? generateTempPassword() : String(password);
+  const tempPassword = generated ? generateTempPassword() : normalizePasswordInput(password);
   assertInvestorPasswordPolicy(tempPassword, {
     mobile: investor.mobile,
     memberCode: investor.member_code,

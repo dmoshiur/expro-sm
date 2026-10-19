@@ -18,6 +18,7 @@ import {
 import { promisify } from 'node:util';
 import { config } from '../config/index.js';
 import { AppError } from '../utils/errors.js';
+import { normalizePasswordInput } from '../utils/validate.js';
 
 const scrypt = promisify(scryptCb);
 
@@ -29,23 +30,30 @@ const SCRYPT_MAXMEM = 256 * 1024 * 1024;
 
 /** Returns `scrypt$N$r$p$saltHex$hashHex` (self-describing, upgrade-friendly). */
 export async function hashPassword(password, params = SCRYPT, { minLength = 12 } = {}) {
-  if (typeof password !== 'string' || password.length < minLength) {
+  // Passwords are trimmed before hashing everywhere (see
+  // normalizePasswordInput): the login Validator always trimmed its input, so
+  // hashing an untrimmed seed/env password used to create a hash that no
+  // login attempt could ever match.
+  const normalized = typeof password === 'string' ? normalizePasswordInput(password) : password;
+  if (typeof normalized !== 'string' || normalized.length < minLength) {
     throw new AppError(400, 'WEAK_PASSWORD', `Password must be at least ${minLength} characters`);
   }
   const salt = randomBytes(params.saltBytes);
-  const derived = await scrypt(password, salt, params.keylen, { N: params.N, r: params.r, p: params.p, maxmem: SCRYPT_MAXMEM });
+  const derived = await scrypt(normalized, salt, params.keylen, { N: params.N, r: params.r, p: params.p, maxmem: SCRYPT_MAXMEM });
   return `scrypt$${params.N}$${params.r}$${params.p}$${salt.toString('hex')}$${derived.toString('hex')}`;
 }
 
 export async function verifyPassword(password, stored) {
   if (typeof password !== 'string' || typeof stored !== 'string') return false;
-  const parts = stored.split('$');
+  // Trim before verifying, exactly as hashPassword() trimmed before hashing.
+  const candidate = normalizePasswordInput(password);
+  const parts = stored.trim().split('$');
   if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
   const [, n, r, p, saltHex, hashHex] = parts;
   const salt = Buffer.from(saltHex, 'hex');
   const expected = Buffer.from(hashHex, 'hex');
   try {
-    const derived = await scrypt(password, salt, expected.length, {
+    const derived = await scrypt(candidate, salt, expected.length, {
       N: Number(n),
       r: Number(r),
       p: Number(p),
@@ -61,7 +69,7 @@ export async function verifyPassword(password, stored) {
 export function assertPasswordPolicy(password, { email, name } = {}) {
   const missing = [];
   const forbidden = [];
-  const value = typeof password === 'string' ? password : '';
+  const value = typeof password === 'string' ? normalizePasswordInput(password) : '';
   if (value.length < 12) missing.push('at least 12 characters');
   if (value.length > 200) missing.push('at most 200 characters');
   if (value && !/[a-z]/.test(value)) missing.push('a lowercase letter');
@@ -106,7 +114,7 @@ const COMMON_INVESTOR_PASSWORDS = new Set([
 ]);
 
 export function assertInvestorPasswordPolicy(password, { mobile, memberCode, name } = {}) {
-  const value = typeof password === 'string' ? password : '';
+  const value = typeof password === 'string' ? normalizePasswordInput(password) : '';
   const missing = [];
   const forbidden = [];
   if (value.length < INVESTOR_PASSWORD_MIN_LENGTH) missing.push(`at least ${INVESTOR_PASSWORD_MIN_LENGTH} characters`);

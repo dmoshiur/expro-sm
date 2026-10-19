@@ -21,6 +21,29 @@ export function isValidEmail(value) {
   return typeof value === 'string' && value.length <= 254 && EMAIL_RE.test(value.trim());
 }
 
+/**
+ * Canonical login-email form: trimmed + lower-cased.
+ *
+ * Applied at EVERY boundary (HTTP validator, auth service lookups, seed /
+ * startup sync, `npm run reset-admin`) so a stray space or a case difference -
+ * most often pasted into a hosting dashboard env var - can never strand an
+ * admin on the "Invalid email or password" screen.
+ */
+export function normalizeEmail(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+/**
+ * Canonical password-input form: leading/trailing whitespace is never part of
+ * a password anywhere in this system (the HTTP Validator already trimmed it;
+ * hashing, verification, seed and CLI flows now do exactly the same), so a
+ * password pasted with a trailing space/newline into an env var still matches
+ * the password typed on the login form.
+ */
+export function normalizePasswordInput(value) {
+  return String(value ?? '').trim();
+}
+
 export function isValidBdMobile(value) {
   return normalizeBdMobile(value) !== null;
 }
@@ -82,7 +105,7 @@ export class Validator {
   email(field, { required = false, label = 'Email' } = {}) {
     const value = this.string(field, { required, max: 254, label });
     if (value === undefined) return undefined;
-    const normalized = value.toLowerCase();
+    const normalized = normalizeEmail(value);
     if (!isValidEmail(normalized)) {
       this.fail(field, 'Enter a valid email address');
       return undefined;

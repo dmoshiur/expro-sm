@@ -18,6 +18,8 @@ services:
     # guarantees new schema (e.g. 002_investor_portal_login.sql) is applied
     # before the server starts accepting traffic. If your Render plan exposes
     # Pre-Deploy you can move `npm run migrate` there and start with `npm start`.
+    # The server process itself then syncs the seed Super Admin from
+    # SEED_SUPER_ADMIN_* (see below), so no separate seed step is needed here.
     startCommand: npm run migrate && npm start
     healthCheckPath: /api/health
     autoDeploy: false
@@ -55,6 +57,22 @@ services:
       - key: ENCRYPTION_KEY
         sync: false
 
+      # --- Super Admin bootstrap. While BOTH are set, every startup creates
+      #     the account when missing and re-hashes its password whenever it
+      #     no longer matches SEED_SUPER_ADMIN_PASSWORD. Password: at least 12
+      #     chars with upper + lower + digit + symbol, not containing the
+      #     email name. After the first successful login, change the password
+      #     in the app and DELETE both variables (or set
+      #     SEED_SUPER_ADMIN_ON_START=false) so restarts cannot reset it.
+      #     `sync: false` keeps dashboard values from being overwritten.
+      - key: SEED_SUPER_ADMIN_EMAIL
+        sync: false
+      - key: SEED_SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: SEED_SUPER_ADMIN_ON_START
+        value: "true"
+        sync: false
+
       # --- Optional but recommended (dashboard may leave them at defaults).
       # Payment: keep mock in production only if you intentionally run offline.
       # Real bKash requires PAYMENT_PROVIDER=bkash and all BKASH_* vars.
@@ -78,3 +96,7 @@ services:
     # Disk is not required (Turso is remote). Keep the service stateless.
     # If you need a one-off shell for diagnostics:
     #   Render → Shell → `npm run db:check`  (reports migrations, FKs, invariants)
+    #   Render → Shell → `npm run reset-admin`  (force-reset the Super Admin
+    #     password from SEED_SUPER_ADMIN_* when locked out: "Invalid email or
+    #     password" after changing the env vars usually just needs a redeploy -
+    #     the startup sync does the same thing on boot.)
