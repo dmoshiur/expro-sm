@@ -10,6 +10,7 @@ import { NOW } from '../db/sql.js';
 import { config } from '../config/index.js';
 import { AppError, badRequest, conflict, forbidden, notFound, unauthorized } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
+import { normalizeEmail, normalizePasswordInput } from '../utils/validate.js';
 import {
   assertPasswordPolicy,
   decryptField,
@@ -46,7 +47,11 @@ export function clearSessionCache() {
 // Admins / users
 // ---------------------------------------------------------------------------
 export async function findAdminByEmail(email, client = undefined) {
-  const res = await query('select * from admins where lower(email) = lower(?1)', [email], client);
+  // Normalised on both sides: the stored value may pre-date normalisation
+  // (mixed case / padded, e.g. created from a padded env variable).
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const res = await query('select * from admins where lower(trim(email)) = ?1', [normalized], client);
   return res.rows[0] ?? null;
 }
 
@@ -80,15 +85,18 @@ export async function listAdmins({ search, role, isActive, limit = 50, offset = 
 
 export async function createAdmin({ name, email, password, role }, actor, req) {
   if (!ROLES.includes(role)) throw badRequest('Invalid role');
-  assertPasswordPolicy(password, { email, name });
-  const existing = await findAdminByEmail(email);
+  const cleanName = String(name ?? '').trim();
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPassword = normalizePasswordInput(password);
+  assertPasswordPolicy(normalizedPassword, { email: normalizedEmail, name: cleanName });
+  const existing = await findAdminByEmail(normalizedEmail);
   if (existing) throw conflict('An admin with this email already exists');
-  const passwordHash = await hashPassword(password);
+  const passwordHash = await hashPassword(normalizedPassword);
   const res = await query(
     `insert into admins (name, email, password_hash, role)
-     values (?1, lower(?2), ?3, ?4)
+     values (?1, ?2, ?3, ?4)
      returning ${PUBLIC_ADMIN_COLUMNS}`,
-    [name, email, passwordHash, role],
+    [cleanName, normalizedEmail, passwordHash, role],
   );
   const admin = res.rows[0];
   await audit.record(
@@ -112,8 +120,8 @@ export async function updateAdmin(id, changes, actor, req) {
       return `?${params.length}`;
     };
 
-    if (changes.name !== undefined) sets.push(`name = ${push(changes.name)}`);
-    if (changes.email !== undefined) sets.push(`email = lower(${push(changes.email)})`);
+    if (changes.name !== undefined) sets.push(`name = ${push(String(changes.name).trim())}`);
+    if (changes.email !== undefined) sets.push(`email = ${push(normalizeEmail(changes.email))}`);
     if (changes.role !== undefined) {
       if (!ROLES.includes(changes.role)) throw badRequest('Invalid role');
       if (current.role === 'SUPER_ADMIN' && changes.role !== 'SUPER_ADMIN') {
@@ -203,8 +211,9 @@ export async function updateAdmin(id, changes, actor, req) {
 export async function resetAdminPassword(id, { newPassword, mustChange = true }, actor, req) {
   const target = await getAdminById(id);
   if (!target) throw notFound('Admin not found');
-  assertPasswordPolicy(newPassword, { email: target.email, name: target.name });
-  const passwordHash = await hashPassword(newPassword);
+  const normalizedPassword = normalizePasswordInput(newPassword);
+  assertPasswordPolicy(normalizedPassword, { email: target.email, name: target.name });
+  const passwordHash = await hashPassword(normalizedPassword);
   await withTransaction(async (client) => {
     await query(
       `update admins set password_hash = ?2, password_changed_at = ${NOW}, failed_login_count = 0,
@@ -257,17 +266,21 @@ async function loadTotpSecret(adminId, client = undefined) {
 const LOCKOUT_BASE_DELAY_MS = 1_500;
 
 export async function login({ email, password, totpCode }, req) {
-  const admin = await findAdminByEmail(email);
+  // Email/password are normalised here (not just in the HTTP validator) so
+  // every caller - API, seed, scripts - agrees on the same credentials.
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPassword = normalizePasswordInput(password);
+  const admin = await findAdminByEmail(normalizedEmail);
   const genericError = unauthorized('Invalid email or password');
 
   if (!admin) {
     // Burn comparable time so unknown emails are not obviously faster.
-    await verifyPassword(String(password ?? ''), 'scrypt$16384$8$1$00$00');
+    await verifyPassword(normalizedPassword, 'scrypt$16384$8$1$00$00');
     await audit.record({
       action: audit.AUDIT_ACTIONS.LOGIN_FAILED,
       entity: 'admin',
       entityId: null,
-      meta: { email: String(email ?? '').slice(0, 254), reason: 'UNKNOWN_EMAIL' },
+      meta: { email: normalizedEmail.slice(0, 254), reason: 'UNKNOWN_EMAIL' },
       req,
     });
     await delay(LOCKOUT_BASE_DELAY_MS);
@@ -296,7 +309,7 @@ export async function login({ email, password, totpCode }, req) {
     throw forbidden('This account is disabled');
   }
 
-  const passwordOk = await verifyPassword(String(password ?? ''), admin.password_hash);
+  const passwordOk = await verifyPassword(normalizedPassword, admin.password_hash);
   if (!passwordOk) {
     const failures = admin.failed_login_count + 1;
     const threshold = config.security.lockoutThreshold;
@@ -504,13 +517,15 @@ export async function changeOwnPassword(adminId, { currentPassword, newPassword 
   const res = await query('select * from admins where id = ?1', [adminId]);
   const admin = res.rows[0];
   if (!admin) throw notFound('Admin not found');
-  const ok = await verifyPassword(String(currentPassword ?? ''), admin.password_hash);
+  const current = normalizePasswordInput(currentPassword);
+  const next = normalizePasswordInput(newPassword);
+  const ok = await verifyPassword(current, admin.password_hash);
   if (!ok) throw unauthorized('Current password is incorrect');
-  if (await verifyPassword(String(newPassword ?? ''), admin.password_hash)) {
+  if (await verifyPassword(next, admin.password_hash)) {
     throw badRequest('New password must be different from the current password');
   }
-  assertPasswordPolicy(newPassword, { email: admin.email, name: admin.name });
-  const passwordHash = await hashPassword(newPassword);
+  assertPasswordPolicy(next, { email: admin.email, name: admin.name });
+  const passwordHash = await hashPassword(next);
   await query(
     `update admins set password_hash = ?2, password_changed_at = ${NOW}, must_change_password = false,
        failed_login_count = 0, locked_until = null where id = ?1`,
@@ -569,7 +584,7 @@ export async function disableTotp(adminId, { password, code }, req) {
   const admin = res.rows[0];
   if (!admin) throw notFound('Admin not found');
   if (!admin.totp_enabled) return { totp_enabled: false };
-  const ok = await verifyPassword(String(password ?? ''), admin.password_hash);
+  const ok = await verifyPassword(normalizePasswordInput(password), admin.password_hash);
   if (!ok) throw unauthorized('Password is incorrect');
   const secret = await loadTotpSecret(adminId);
   const check = await verifyTotp(secret, code, { lastStep: admin.totp_last_step });
@@ -580,33 +595,224 @@ export async function disableTotp(adminId, { password, code }, req) {
 }
 
 // ---------------------------------------------------------------------------
-// Bootstrap
+// Bootstrap / seed sync
 // ---------------------------------------------------------------------------
 export async function countAdmins(client = undefined) {
   const res = await query('select count(*) as count from admins', [], client);
   return res.rows[0].count;
 }
 
-/** Creates the first SUPER_ADMIN when the table is empty (used by seed.js). */
-export async function ensureFirstSuperAdmin({ name, email, password }, req = null) {
-  const existing = await countAdmins();
-  if (existing > 0) return { created: false };
-  assertPasswordPolicy(password, { email, name });
-  const passwordHash = await hashPassword(password);
-  const res = await query(
-    `insert into admins (name, email, password_hash, role, must_change_password)
-     values (?1, lower(?2), ?3, 'SUPER_ADMIN', true)
-     returning ${PUBLIC_ADMIN_COLUMNS}`,
-    [name, email, passwordHash],
-  );
+/**
+ * Idempotent upsert+sync for a seeded admin account.
+ *
+ * This is the fix for "I changed SEED_SUPER_ADMIN_PASSWORD but login still
+ * says Invalid email or password": the old bootstrap returned early whenever
+ * an admin already existed, so the stored hash was never updated. Now an
+ * existing account is VERIFIED against the supplied password:
+ *   - verifies          -> left untouched (apart from repairing a demoted /
+ *                          disabled / locked / un-normalised account);
+ *   - does not verify   -> the password is re-hashed and updated, lockout is
+ *                          cleared, live sessions are revoked and the account
+ *                          must change the password at next login.
+ * `forcePassword` re-hashes even when the password already verifies
+ * (seed --reset-passwords). The password policy is only enforced when the
+ * password actually changes, so a no-op sync never fails on a legacy hash.
+ * The plaintext password is never logged or audited.
+ */
+export async function syncSeedAdmin(
+  { name, email, password, role },
+  { mustChangePassword = true, forcePassword = false, source = 'seed' } = {},
+  req = null,
+) {
+  if (!ROLES.includes(role)) throw badRequest('Invalid role');
+  const cleanName = String(name ?? '').trim() || 'Super Admin';
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPassword = normalizePasswordInput(password);
+  if (!normalizedEmail) throw badRequest('A seed admin email is required');
+  if (!normalizedPassword) throw badRequest('A seed admin password is required');
+
+  const existing = await findAdminByEmail(normalizedEmail);
+  if (!existing) {
+    assertPasswordPolicy(normalizedPassword, { email: normalizedEmail, name: cleanName });
+    const passwordHash = await hashPassword(normalizedPassword);
+    const res = await query(
+      `insert into admins (name, email, password_hash, role, must_change_password)
+       values (?1, ?2, ?3, ?4, ?5)
+       returning ${PUBLIC_ADMIN_COLUMNS}`,
+      [cleanName, normalizedEmail, passwordHash, role, mustChangePassword],
+    );
+    await audit.record({
+      action: audit.AUDIT_ACTIONS.ADMIN_CREATED,
+      entity: 'admin',
+      entityId: res.rows[0].id,
+      newValue: { email: res.rows[0].email, role, bootstrap: true },
+      meta: { source },
+      req,
+    });
+    return { created: true, updated: false, passwordReset: false, admin: res.rows[0] };
+  }
+
+  const passwordMatches = !forcePassword && (await verifyPassword(normalizedPassword, existing.password_hash));
+  const passwordReset = forcePassword || !passwordMatches;
+  const emailChanged = existing.email !== normalizedEmail;
+  const roleChanged = existing.role !== role;
+  const reactivated = !existing.is_active;
+  const unlocked = Number(existing.failed_login_count ?? 0) > 0 || Boolean(existing.locked_until);
+  const updated = passwordReset || emailChanged || roleChanged || reactivated || unlocked;
+  if (!updated) {
+    return { created: false, updated: false, passwordReset: false, admin: await getAdminById(existing.id) };
+  }
+
+  let passwordHash = existing.password_hash;
+  if (passwordReset) {
+    assertPasswordPolicy(normalizedPassword, { email: normalizedEmail, name: existing.name || cleanName });
+    passwordHash = await hashPassword(normalizedPassword);
+  }
+
+  await withTransaction(async (client) => {
+    await query(
+      `update admins set email = ?2, password_hash = ?3,
+         password_changed_at = case when ?4 then ${NOW} else password_changed_at end,
+         must_change_password = case when ?4 then ?5 else must_change_password end,
+         role = ?6, is_active = true, disabled_reason = null,
+         failed_login_count = 0, locked_until = null, updated_at = ${NOW}
+       where id = ?1`,
+      [existing.id, normalizedEmail, passwordHash, passwordReset, mustChangePassword, role],
+      client,
+    );
+    if (passwordReset) {
+      await client.query(
+        `update sessions set revoked_at = ${NOW}, revoked_reason = 'PASSWORD_RESET' where admin_id = ?1 and revoked_at is null`,
+        [existing.id],
+      );
+    }
+  });
+  sessionCache.clear();
   await audit.record({
-    action: audit.AUDIT_ACTIONS.ADMIN_CREATED,
+    action: passwordReset ? audit.AUDIT_ACTIONS.PASSWORD_RESET : audit.AUDIT_ACTIONS.ADMIN_UPDATED,
     entity: 'admin',
-    entityId: res.rows[0].id,
-    newValue: { email: res.rows[0].email, role: 'SUPER_ADMIN', bootstrap: true },
+    entityId: existing.id,
+    oldValue: pick(existing, ['email', 'role', 'is_active']),
+    newValue: { email: normalizedEmail, role, is_active: true },
+    meta: { source, seedSync: true, passwordReset, reactivated, unlocked, mustChange: passwordReset ? mustChangePassword : undefined },
     req,
   });
-  return { created: true, admin: res.rows[0] };
+  return { created: false, updated: true, passwordReset, admin: await getAdminById(existing.id) };
+}
+
+/** syncSeedAdmin pinned to the SUPER_ADMIN role. */
+export async function syncSeedSuperAdmin({ name, email, password }, options = {}, req = null) {
+  return syncSeedAdmin({ name, email, password, role: 'SUPER_ADMIN' }, options, req);
+}
+
+/**
+ * Unconditional password reset addressed by email - the workhorse behind
+ * `npm run reset-admin`. Keeps the account's existing role, clears any
+ * lockout, optionally re-activates a disabled account and revokes every
+ * live session. Throws 404 when no admin owns the (normalised) email.
+ */
+export async function forceResetAdminPasswordByEmail(
+  email,
+  newPassword,
+  { mustChangePassword = true, reactivate = true, source = 'reset-admin' } = {},
+  req = null,
+) {
+  const normalizedEmail = normalizeEmail(email);
+  const target = await findAdminByEmail(normalizedEmail);
+  if (!target) throw notFound(`No admin found for ${normalizedEmail || '(empty email)'}`);
+  const normalizedPassword = normalizePasswordInput(newPassword);
+  if (!normalizedPassword) throw badRequest('A new password is required');
+  assertPasswordPolicy(normalizedPassword, { email: normalizedEmail, name: target.name });
+  const passwordHash = await hashPassword(normalizedPassword);
+
+  await withTransaction(async (client) => {
+    await query(
+      `update admins set email = ?2, password_hash = ?3, password_changed_at = ${NOW},
+         must_change_password = ?4, failed_login_count = 0, locked_until = null,
+         is_active = case when ?5 then true else is_active end,
+         disabled_reason = case when ?5 then null else disabled_reason end,
+         updated_at = ${NOW}
+       where id = ?1`,
+      [target.id, normalizedEmail, passwordHash, mustChangePassword, reactivate],
+      client,
+    );
+    await client.query(
+      `update sessions set revoked_at = ${NOW}, revoked_reason = 'PASSWORD_RESET' where admin_id = ?1 and revoked_at is null`,
+      [target.id],
+    );
+  });
+  sessionCache.clear();
+  await audit.record({
+    action: audit.AUDIT_ACTIONS.PASSWORD_RESET,
+    entity: 'admin',
+    entityId: target.id,
+    meta: { source, forced: true, mustChange: mustChangePassword, reactivated: reactivate && !target.is_active },
+    req,
+  });
+  return getAdminById(target.id);
+}
+
+/**
+ * Creates the first SUPER_ADMIN when the table is empty. When an admin with
+ * the seed email already exists it is synced with the supplied password
+ * (verified first, re-hashed on mismatch) instead of being left untouched;
+ * a different email is never created on top of an existing admin set.
+ */
+export async function ensureFirstSuperAdmin({ name, email, password }, req = null) {
+  const normalizedEmail = normalizeEmail(email);
+  const existing = normalizedEmail ? await findAdminByEmail(normalizedEmail) : null;
+  if (!existing && (await countAdmins()) > 0) return { created: false, updated: false, passwordReset: false };
+  return syncSeedSuperAdmin(
+    { name, email: normalizedEmail, password },
+    { source: 'ensure-first-super-admin' },
+    req,
+  );
+}
+
+/**
+ * Startup sync (server.js): while SEED_SUPER_ADMIN_EMAIL +
+ * SEED_SUPER_ADMIN_PASSWORD are present (and SEED_SUPER_ADMIN_ON_START is not
+ * false), that account is created when missing and its password is updated
+ * whenever it no longer verifies against the env value. Setting the Render
+ * env vars and redeploying is therefore enough to recover a locked-out
+ * Super Admin - no manual seed run required. Logs say WHAT happened for the
+ * account, never the password itself.
+ */
+export async function syncSuperAdminFromEnv(req = null) {
+  const seed = config.seed ?? {};
+  if (!seed.syncOnStart) return { skipped: true, reason: 'disabled' };
+  const email = normalizeEmail(seed.superAdminEmail);
+  const password = normalizePasswordInput(seed.superAdminPassword);
+  if (!email && !password) return { skipped: true, reason: 'not-configured' };
+  if (!email || !password) {
+    logger.warn('seed super admin sync skipped: SEED_SUPER_ADMIN_EMAIL and SEED_SUPER_ADMIN_PASSWORD must both be set', {
+      emailSet: Boolean(email),
+      passwordSet: Boolean(password),
+    });
+    return { skipped: true, reason: 'partially-configured' };
+  }
+
+  const result = await syncSeedSuperAdmin(
+    { name: seed.superAdminName, email, password },
+    { source: 'startup-env' },
+    req,
+  );
+  if (result.created) {
+    logger.warn(
+      'seed super admin created from SEED_SUPER_ADMIN_* - log in, change the password, then remove the SEED_* variables from the environment',
+      { email },
+    );
+  } else if (result.passwordReset) {
+    logger.warn(
+      'seed super admin password updated to match SEED_SUPER_ADMIN_PASSWORD - log in, change the password, then remove the SEED_* variables from the environment',
+      { email },
+    );
+  } else if (result.updated) {
+    logger.warn('seed super admin account repaired from SEED_SUPER_ADMIN_* (role / active / lockout / email normalisation)', { email });
+  } else {
+    logger.info('seed super admin already in sync with SEED_SUPER_ADMIN_*', { email });
+  }
+  return result;
 }
 
 export { sha256Hex };

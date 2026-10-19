@@ -21,7 +21,7 @@ export function Login() {
     setBusy(true);
     setError(null);
     try {
-      await login({ email, password, totpCode: needsTotp ? totpCode : undefined });
+      await login({ email: email.trim().toLowerCase(), password: password.trim(), totpCode: needsTotp ? totpCode : undefined });
       navigate(location.state?.from ?? '/', { replace: true });
     } catch (err) {
       if (err.code === 'TOTP_REQUIRED' || /2FA|code/i.test(err.message)) {

@@ -41,6 +41,11 @@ export function prepareEnv() {
   const dbEnvFromDotEnv = { url: process.env.TURSO_DATABASE_URL, token: process.env.TURSO_AUTH_TOKEN };
   delete process.env.TURSO_DATABASE_URL;
   delete process.env.TURSO_AUTH_TOKEN;
+  // A developer .env may carry real SEED_* credentials; the startup seed sync
+  // must never run against a test database (or with real passwords in tests).
+  delete process.env.SEED_SUPER_ADMIN_EMAIL;
+  delete process.env.SEED_SUPER_ADMIN_PASSWORD;
+  process.env.SEED_SUPER_ADMIN_ON_START = 'false';
   const hadTestEnv = loadEnvFile(join(ROOT, '.env.test'));
   process.env.NODE_ENV = 'test';
   process.env.LOG_LEVEL = process.env.TEST_LOG_LEVEL ?? 'error';

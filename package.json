@@ -19,6 +19,7 @@
     "verify:deploy": "node scripts/verify-deploy.mjs",
     "migrate": "node --env-file-if-exists=.env server/src/db/migrate.js",
     "seed": "node --env-file-if-exists=.env server/src/db/seed.js",
+    "reset-admin": "node --env-file-if-exists=.env server/src/db/reset-admin.js",
     "test": "node --env-file-if-exists=.env --test --test-concurrency=1 \"server/tests/*.test.js\"",
     "test:unit": "node --env-file-if-exists=.env --test --test-concurrency=1 \"server/tests/unit.*.test.js\"",
     "check": "node scripts/check-env.mjs",

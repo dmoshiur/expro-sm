@@ -2,7 +2,7 @@
  * Seed script.
  *   npm run seed                       -> first Super Admin (+ sample data in dev)
  *   npm run seed -- --no-sample        -> admins only
- *   npm run seed -- --reset-passwords  -> also reset the seeded admin passwords
+ *   npm run seed -- --reset-passwords  -> force-reset the seeded admin passwords
  *   npm run seed -- --sample           -> sample data (required in production; dev default)
  * In production SEED_SUPER_ADMIN_PASSWORD (and the other SEED_*_PASSWORD values) are required.
  *
@@ -10,18 +10,25 @@
  *   SEED_SUPER_ADMIN_EMAIL / SEED_SUPER_ADMIN_PASSWORD
  *   SEED_ACCOUNTANT_EMAIL  / SEED_ACCOUNTANT_PASSWORD
  *   SEED_VIEWER_EMAIL      / SEED_VIEWER_PASSWORD
+ *
+ * Existing seeded admins are SYNCED, not skipped: when the stored hash does
+ * not verify against the env password it is re-hashed and updated (lockout
+ * cleared, sessions revoked) - the same sync the server runs at startup while
+ * SEED_SUPER_ADMIN_* is set. `--reset-passwords` forces a re-hash even when
+ * the password already matches. For a targeted one-account reset without
+ * touching sample data, prefer `npm run reset-admin` (db/reset-admin.js).
  */
 import { randomBytes } from 'node:crypto';
 import { query, closeDatabase } from './client.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
-import { assertPasswordPolicy, encryptField, hashPassword, last4, nidHash } from '../services/crypto.service.js';
-import { ensureFirstSuperAdmin } from '../services/auth.service.js';
+import { syncSeedAdmin, syncSeedSuperAdmin } from '../services/auth.service.js';
 import { createInvestor } from '../services/investor.service.js';
 import { createInvestment } from '../services/investment.service.js';
 import { issueToken } from '../services/paylink.service.js';
 import { addDays, dhakaDate } from '../utils/dates.js';
 import { formatBDT } from '../utils/money.js';
+import { normalizeEmail, normalizePasswordInput } from '../utils/validate.js';
 import { AppError } from '../utils/errors.js';
 
 const args = process.argv.slice(2);
@@ -30,7 +37,9 @@ const withSample = config.isProd ? args.includes('--sample') : !args.includes('-
 const resetPasswords = args.includes('--reset-passwords');
 
 function envPassword(name, fallback) {
-  const value = process.env[name];
+  // Trimmed: passwords are trimmed at login, so an env value pasted with a
+  // trailing space/newline must hash to the same password the admin types.
+  const value = normalizePasswordInput(process.env[name]);
   if (value) return value;
   if (config.isProd) {
     // Never create production admins with the well-known development fallbacks.
@@ -54,59 +63,60 @@ function withPasswordEnvContext(envName, promise) {
   });
 }
 
+/**
+ * Create-or-sync one seeded admin via auth.service (shared with the startup
+ * env sync): an existing account whose hash no longer verifies against the
+ * env password gets its password re-hashed instead of being skipped.
+ */
 async function upsertAdmin({ name, email, password, role, mustChange = true }) {
-  const existing = await query('select id, role, is_active from admins where lower(email) = lower(?1)', [email]);
-  if (existing.rows[0]) {
-    if (resetPasswords) {
-      assertPasswordPolicy(password, { email, name });
-      await query('update admins set password_hash = ?2, must_change_password = ?3, failed_login_count = 0, locked_until = null where id = ?1', [
-        existing.rows[0].id,
-        await hashPassword(password),
-        mustChange,
-      ]);
-      return { id: existing.rows[0].id, email, created: false, passwordReset: true };
-    }
-    return { id: existing.rows[0].id, email, created: false, passwordReset: false };
-  }
-  assertPasswordPolicy(password, { email, name });
-  const res = await query(
-    `insert into admins (name, email, password_hash, role, must_change_password)
-     values (?1, lower(?2), ?3, ?4, ?5) returning id`,
-    [name, email, await hashPassword(password), role, mustChange],
+  const result = await syncSeedAdmin(
+    { name, email: normalizeEmail(email), password, role },
+    { mustChangePassword: mustChange, forcePassword: resetPasswords, source: 'seed' },
   );
-  return { id: res.rows[0].id, email, created: true };
+  return {
+    id: result.admin.id,
+    email: result.admin.email,
+    created: result.created,
+    updated: result.updated,
+    passwordReset: result.passwordReset,
+  };
 }
 
 async function main() {
   logger.info('seeding database', { env: config.nodeEnv, withSample, resetPasswords });
 
   // --- admins -------------------------------------------------------------
-  const superEmail = process.env.SEED_SUPER_ADMIN_EMAIL || 'superadmin@investorportal.test';
-  const superPassword = envPassword('SEED_SUPER_ADMIN_PASSWORD', 'Portal#Root#2026!');
-
-  const bootstrap = await withPasswordEnvContext(
-    'SEED_SUPER_ADMIN_PASSWORD',
-    ensureFirstSuperAdmin({
-      name: process.env.SEED_SUPER_ADMIN_NAME || 'Super Admin',
-      email: superEmail,
-      password: superPassword,
-    }),
-  );
-
+  // Emails/passwords are normalised (trim + lower-case / trim) so values
+  // pasted into a hosting dashboard match what the login form will send.
   const created = [];
-  if (bootstrap.created) {
-    created.push({ ...bootstrap.admin, password: superPassword, role: 'SUPER_ADMIN' });
-  } else {
-    const result = await upsertAdmin({
-      name: process.env.SEED_SUPER_ADMIN_NAME || 'Super Admin',
-      email: superEmail,
-      password: superPassword,
-      role: 'SUPER_ADMIN',
-    });
-    if (result.created) created.push({ ...result, password: superPassword, role: 'SUPER_ADMIN' });
-  }
+  const passwordResets = [];
+  const noteResult = (result, password, role) => {
+    if (result.created) created.push({ ...result, password, role });
+    else if (result.passwordReset) passwordResets.push({ ...result, role });
+  };
 
-  const accountantEmail = process.env.SEED_ACCOUNTANT_EMAIL || 'accountant@investorportal.test';
+  const superEmail = normalizeEmail(process.env.SEED_SUPER_ADMIN_EMAIL) || 'superadmin@investorportal.test';
+  const superPassword = envPassword('SEED_SUPER_ADMIN_PASSWORD', 'Portal#Root#2026!');
+  const superAdmin = await withPasswordEnvContext(
+    'SEED_SUPER_ADMIN_PASSWORD',
+    syncSeedSuperAdmin(
+      {
+        name: String(process.env.SEED_SUPER_ADMIN_NAME ?? '').trim() || 'Super Admin',
+        email: superEmail,
+        password: superPassword,
+      },
+      { forcePassword: resetPasswords, source: 'seed' },
+    ).then((result) => ({
+      id: result.admin.id,
+      email: result.admin.email,
+      created: result.created,
+      updated: result.updated,
+      passwordReset: result.passwordReset,
+    })),
+  );
+  noteResult(superAdmin, superPassword, 'SUPER_ADMIN');
+
+  const accountantEmail = normalizeEmail(process.env.SEED_ACCOUNTANT_EMAIL) || 'accountant@investorportal.test';
   const accountantPassword = envPassword('SEED_ACCOUNTANT_PASSWORD', 'Portal#Ledger#2026!');
   const accountant = await withPasswordEnvContext(
     'SEED_ACCOUNTANT_PASSWORD',
@@ -117,15 +127,15 @@ async function main() {
       role: 'ACCOUNTANT',
     }),
   );
-  if (accountant.created) created.push({ ...accountant, password: accountantPassword, role: 'ACCOUNTANT' });
+  noteResult(accountant, accountantPassword, 'ACCOUNTANT');
 
-  const viewerEmail = process.env.SEED_VIEWER_EMAIL || 'viewer@investorportal.test';
+  const viewerEmail = normalizeEmail(process.env.SEED_VIEWER_EMAIL) || 'viewer@investorportal.test';
   const viewerPassword = envPassword('SEED_VIEWER_PASSWORD', 'Portal#Reports#2026!');
   const viewer = await withPasswordEnvContext(
     'SEED_VIEWER_PASSWORD',
     upsertAdmin({ name: 'Report Viewer', email: viewerEmail, password: viewerPassword, role: 'VIEWER' }),
   );
-  if (viewer.created) created.push({ ...viewer, password: viewerPassword, role: 'VIEWER' });
+  noteResult(viewer, viewerPassword, 'VIEWER');
 
   const adminRow = await query(`select * from admins where role = 'SUPER_ADMIN' order by id asc limit 1`);
   const actor = adminRow.rows[0];
@@ -149,8 +159,15 @@ async function main() {
     for (const admin of created) {
       process.stdout.write(`  ${admin.role.padEnd(11)} ${admin.email}  password: ${admin.password}\n`);
     }
-  } else {
-    process.stdout.write('Administrators already present (use --reset-passwords to reset them).\n');
+  }
+  if (passwordResets.length > 0) {
+    process.stdout.write('Administrators whose password was updated to match the SEED_* env value (change it after first login):\n');
+    for (const admin of passwordResets) {
+      process.stdout.write(`  ${admin.role.padEnd(11)} ${admin.email}\n`);
+    }
+  }
+  if (created.length === 0 && passwordResets.length === 0) {
+    process.stdout.write('Administrators already present and already in sync with the SEED_* passwords.\n');
     process.stdout.write(`  ${superEmail}\n  ${accountantEmail}\n  ${viewerEmail}\n`);
   }
   if (sample) {
@@ -198,7 +215,7 @@ async function createSampleData(actor) {
   // The first sample investor gets portal access with a known temporary
   // password (override with SEED_INVESTOR_PASSWORD) + a mostly complete
   // profile, so the investor portal can be tried immediately after seeding.
-  const portalPassword = process.env.SEED_INVESTOR_PASSWORD || 'Investor#2026Portal';
+  const portalPassword = normalizePasswordInput(process.env.SEED_INVESTOR_PASSWORD) || 'Investor#2026Portal';
 
   const createdInvestors = [];
   for (const [index, investor] of investors.entries()) {

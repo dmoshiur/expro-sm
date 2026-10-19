@@ -19,7 +19,7 @@ export function PortalLogin() {
     setBusy(true);
     setError(null);
     try {
-      const me = await login({ loginId: loginId.trim(), password });
+      const me = await login({ loginId: loginId.trim(), password: password.trim() });
       navigate(me?.must_change_password ? '/portal/account' : (location.state?.from ?? '/portal'), { replace: true });
     } catch (err) {
       setError(err.message);
