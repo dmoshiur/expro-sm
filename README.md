@@ -1,9 +1,11 @@
 # Investor Installment Portal
 
-An admin-only portal for collecting investment installments in Bangladesh:
-investors and nominees, auto-split installment schedules, SMS payment links,
-bKash payments, manual (cash/bank) entries, receipts, reports and a full audit
-trail.
+A portal for collecting investment installments in Bangladesh: investors and
+nominees, auto-split installment schedules, SMS payment links, bKash payments,
+manual (cash/bank) entries, receipts, reports and a full audit trail — plus an
+**investor self-service portal** where every investor signs in with their
+mobile number or member code to see their own profile, dues, installments,
+payments and receipts, complete their profile/documents, and pay online.
 
 One repository, **one Node process**: Express serves the built React SPA from
 `client/dist` *and* the `/api` on the same port, so there is no CORS in
@@ -62,11 +64,12 @@ npm run dev        # alias of node scripts/dev.mjs
 
 Seed credentials (override with `SEED_*` variables, change on first login):
 
-| Role | Email | Password |
+| Role | Email / login id | Password |
 | --- | --- | --- |
 | Super Admin | `superadmin@investorportal.test` | `Portal#Root#2026!` |
 | Accountant | `accountant@investorportal.test` | `Portal#Ledger#2026!` |
 | Viewer | `viewer@investorportal.test` | `Portal#Reports#2026!` |
+| Investor (sample, `/portal/login`) | mobile `01711000111` or member code `INV-000001` | `Investor#2026Portal` (override with `SEED_INVESTOR_PASSWORD`) |
 
 Every seeded admin starts with `must_change_password = true`; the portal forces
 a password change before anything else, and password policy rejects common
@@ -84,6 +87,7 @@ does the same checks without starting the server.
 | Database | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DB_MIGRATE_ON_START` | Remote Turso required in production; no PostgreSQL or localhost DB fallback |
 | Secrets | `SESSION_SECRET` (≥32 chars), `ENCRYPTION_KEY` (64 hex chars) | rotating `ENCRYPTION_KEY` makes stored NID/TOTP ciphertext unreadable |
 | Sessions | `SESSION_TTL_HOURS`, `SESSION_ROTATE_AFTER_MINUTES`, `COOKIE_SECURE`, `COOKIE_NAME`, `ALLOWED_ORIGINS`, `TRUST_PROXY` | cookies are `httpOnly`, `SameSite=Strict`, and `Secure` when `NODE_ENV=production` |
+| Investor portal | `INVESTOR_COOKIE_NAME`, `INVESTOR_SESSION_TTL_HOURS` (72), `INVESTOR_LOCKOUT_THRESHOLD`, `INVESTOR_LOCKOUT_MINUTES` | fully separate cookie + `investor_sessions` table; an investor token can never act as an admin token |
 | Lockout/limits | `ADMIN_LOCKOUT_THRESHOLD`, `ADMIN_LOCKOUT_MINUTES`, `RATE_LIMIT_*` | in-memory fixed-window limiters, per process |
 | Payment links | `PAYMENT_LINK_TTL_DAYS` | default 30 |
 | Payments | `PAYMENT_PROVIDER`, `BKASH_*`, `PAYMENTS_WEBHOOK_ENABLED`, `PAYMENTS_WEBHOOK_SECRET`, `RECONCILE_STUCK_AFTER_MINUTES` | `PAYMENT_PROVIDER=mock` runs the whole flow offline |
@@ -96,6 +100,47 @@ NID scans ≤ 4 MiB (JPEG/PNG/PDF). File types are decided by magic bytes, not b
 extension or `Content-Type`. Nothing uploaded is ever served from a static
 folder: bytes live in the database, the NID scan is encrypted, and reads go
 through permission-checked routes that audit every access.
+
+## Investor portal (self-service login)
+
+Every investor can sign in at **`/portal/login`** with their **mobile number
+or member code** (`INV-000123`, shown on the admin investor page and list).
+There is no public sign-up: staff issue the first (temporary) password, the
+investor must replace it at first sign-in.
+
+**Giving an investor access (staff):**
+
+* New investor: on the create form, keep *“Enable portal login”* checked
+  (password auto-generated unless typed; optionally SMS it). The temporary
+  password is shown once after creation.
+* Existing investor: investor page → **Portal access** card → *Set password &
+  enable* / *Reset password* (auto-generate or type one, optionally *“Send
+  credentials by SMS”*). The same card shows last login, lock state and active
+  sessions, and can disable access or sign the investor out everywhere.
+* Forgotten password = staff reset from the same card. Resetting revokes all
+  live sessions and clears any lock.
+
+**What investors can do after signing in:**
+
+* **Overview** — dues now, next installment, total paid/remaining, the green
+  account-summary card, profile completeness, upcoming installments with
+  **Pay now** (the normal bKash pay-link flow), recent payments + receipts.
+* **My profile** — personal/contact/address details (father/husband & mother
+  names, date of birth, gender, religion, education, present/permanent
+  address), documents (photo + NID scan Upload/view, stored encrypted),
+  nominees (read-only), membership info.
+* **Investments / Installments / Payments** — own records only, with progress,
+  overdue state, receipts and a downloadable statement CSV.
+* **Account & password** — change password (≥8 chars with a letter and a
+  digit; never the mobile number or member code), see/revoke other sessions.
+
+Security: scrypt password hashes, server-side sessions (SHA-256 token at
+rest) in a **separate table and cookie** from admins, rotation, per-account
+lockout + login rate limits, and a full audit trail
+(`INVESTOR_LOGIN_*`, `INVESTOR_PASSWORD_*`, `INVESTOR_PROFILE_UPDATED`, … in
+`docs/permissions.md`). Identity fields (name, mobile, NID, status, nominees)
+remain staff-managed; admin notes are never exposed to investors. Deactivating
+an investor or disabling portal access ends their sessions immediately.
 
 ## Turso setup
 

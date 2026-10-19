@@ -73,10 +73,41 @@ transition revokes every session immediately.
 | `POST /api/investors/:id/nid` (set/replace NID) | ✅ | ❌ | ❌ |
 | `GET /api/investors/:id/nid` (reveal), `GET …/nominees/:id/nid` | ✅ | ❌ | ❌ |
 | `GET /api/investors/:id/nid-scan`, `POST /api/investors/:id/nid-scan` | ✅ | ❌ | ❌ |
+| `GET /api/investors/:id/portal-access` | ✅ | ✅ | ✅ (mobile masked) |
+| `POST /api/investors/:id/portal-access/password` (set/reset, optional SMS) | ✅ | ✅ | ❌ |
+| `POST /api/investors/:id/portal-access/enabled`, `…/revoke-sessions` | ✅ | ✅ | ❌ |
 
 Every NID reveal and NID-scan read is written to the audit log. A `VIEWER`
-receives `mobile`/`email` masked, `address: '***'`, `nid_last4` masked and never
-the ciphertext columns.
+receives `mobile`/`email`/`alternate_mobile` masked, addresses `'***'`,
+`nid_last4` masked and never the ciphertext columns. `password_hash` (the
+investor's portal credential) is stripped in the service layer for every role.
+
+### Investor portal (`/api/portal`, investor session cookie)
+
+A second, fully separate login system for investors: own cookie
+(`INVESTOR_COOKIE_NAME`), own table (`investor_sessions`), own lockout.
+Admin cookies mean nothing here and vice versa. Login id is the mobile
+number or the member code (`INV-000123`). There is no public sign-up and no
+self-service reset: staff issue a **temporary** password (investor page →
+Portal access, or at investor creation), optionally by SMS; the investor
+must replace it at first sign-in (`403 PASSWORD_CHANGE_REQUIRED` everywhere
+else until then). Only `ACTIVE`, non-deleted, portal-enabled investors can
+sign in; disabling access, deactivating the investor or resetting the
+password revokes live sessions immediately.
+
+| Endpoint | Notes |
+| --- | --- |
+| `POST /api/portal/auth/login` (rate-limited, lockout) | Generic 401 for unknown id / wrong password; 423 when locked. |
+| `POST /api/portal/auth/logout`, `GET /api/portal/auth/me` | Own session only. |
+| `POST /api/portal/auth/change-password` | ≥8 chars, letter + digit, never the mobile / member code / own name. Revokes other sessions. |
+| `POST /api/portal/auth/sessions/revoke-others` | Keeps the current session. |
+| `GET /api/portal/dashboard` | Own totals: invested / paid / remaining / due now / overdue, next due, profile completeness. |
+| `GET /api/portal/profile`, `PATCH /api/portal/profile` | Self-service fields only (email, DOB, addresses, …). Name, mobile, NID, status stay staff-managed; admin `notes` are never exposed. |
+| `GET /api/portal/investments`, `…/installments`, `…/payments` | Scoped by session investor id - there is no `:id` in portal URLs. |
+| `POST /api/portal/installments/:id/pay-link` | Own open installment only (others → 404); reuses the public bKash pay flow. |
+| `GET/POST /api/portal/photo`, `GET/POST /api/portal/nid-scan` | Own documents; same magic-byte validation + encryption; reads audited. |
+| `GET /api/portal/payments/:id/receipt` | Own successful payments only (others → 404). |
+| `GET /api/portal/statement.csv` | Own statement; audited as a report export. |
 
 ### Investments & installments
 
@@ -130,7 +161,11 @@ Written by the service layer with `old_value` / `new_value` (secrets redacted):
 `ADMIN_UPDATED`, `ADMIN_ROLE_CHANGED`, `ADMIN_DISABLED`, `ADMIN_ENABLED`,
 `INVESTOR_CREATED`, `INVESTOR_UPDATED`, `INVESTOR_DEACTIVATED`,
 `INVESTOR_RESTORED`, `INVESTOR_DELETED`, `INVESTOR_PHOTO_UPDATED`,
-`INVESTOR_NID_UPDATED`, `INVESTOR_NID_VIEWED`, `NOMINEES_REPLACED`,
+`INVESTOR_NID_UPDATED`, `INVESTOR_NID_VIEWED`, `INVESTOR_LOGIN_SUCCESS`,
+`INVESTOR_LOGIN_FAILED`, `INVESTOR_LOGIN_LOCKED`, `INVESTOR_LOGOUT`,
+`INVESTOR_PASSWORD_CHANGED`, `INVESTOR_PASSWORD_SET`,
+`INVESTOR_PORTAL_ENABLED`, `INVESTOR_PORTAL_DISABLED`,
+`INVESTOR_SESSIONS_REVOKED`, `INVESTOR_PROFILE_UPDATED`, `NOMINEES_REPLACED`,
 `NOMINEE_UPDATED`, `INVESTMENT_CREATED`, `INVESTMENT_UPDATED`,
 `INVESTMENT_TOTAL_CHANGED`, `INVESTMENT_STATUS_CHANGED`, `INSTALLMENT_UPDATED`,
 `INSTALLMENT_WAIVED`, `INSTALLMENT_CANCELLED`, `INSTALLMENT_REINSTATED`,

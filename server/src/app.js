@@ -16,6 +16,7 @@ import { requestContext } from './middleware/context.js';
 import { securityHeaders, sameOriginGuard, apiLimiter } from './middleware/security.js';
 import { cookiesMiddleware } from './middleware/cookies.js';
 import { attachSession } from './middleware/auth.js';
+import { attachInvestorSession } from './middleware/investor-auth.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import apiRoutes from './routes/index.js';
 import { payCallbackRouter } from './routes/public.routes.js';
@@ -38,6 +39,7 @@ export function createApp({ serveStatic = true } = {}) {
   // JSON for the API (uploads use their own raw parsers on the routes).
   app.use('/api', express.json({ limit: '512kb' }), express.urlencoded({ extended: false, limit: '64kb' }));
   app.use(attachSession);
+  app.use(attachInvestorSession);
   app.use('/api', apiLimiter, apiRoutes);
 
   // Gateway redirect target (must stay on the root path, outside /api).

@@ -13,11 +13,35 @@ import { query, withTransaction } from '../db/client.js';
 import { NOW } from '../db/sql.js';
 import { AppError, badRequest, conflict, notFound } from '../utils/errors.js';
 import { maskInvestor, maskMobile, maskNominee, firstNameOnly } from '../utils/mask.js';
-import { decryptField, encryptField, last4, nidHash } from './crypto.service.js';
+import {
+  INVESTOR_PASSWORD_MIN_LENGTH,
+  assertInvestorPasswordPolicy,
+  decryptField,
+  encryptField,
+  generateTempPassword,
+  hashPassword,
+  last4,
+  nidHash,
+} from './crypto.service.js';
 import { encryptScan, decryptScan, validateUpload } from './files.service.js';
+import { clearInvestorSessionCache, memberCodeForId } from './investor-auth.service.js';
 import * as audit from './audit.service.js';
 
 export const INVESTOR_STATUSES = ['ACTIVE', 'INACTIVE', 'CLOSED'];
+export const GENDERS = ['MALE', 'FEMALE', 'OTHER'];
+/** Optional profile columns (migration 002) an admin or the investor can fill in. */
+export const PROFILE_FIELDS = [
+  'email',
+  'alternate_mobile',
+  'date_of_birth',
+  'gender',
+  'father_name',
+  'mother_name',
+  'religion',
+  'education',
+  'present_address',
+  'permanent_address',
+];
 const SORTABLE = ['created_at', 'updated_at', 'name', 'status', 'mobile'];
 
 // ---------------------------------------------------------------------------
@@ -46,8 +70,10 @@ export async function listInvestors(filters = {}, client = undefined) {
   const whereSql = `where ${where.join(' and ')}`;
 
   const rows = await query(
-    `select i.id, i.name, i.mobile, i.address, i.status, i.nid_last4, (i.nid_encrypted is not null) as has_nid,
+    `select i.id, i.member_code, i.name, i.mobile, i.email, i.address, i.status, i.nid_last4,
+            (i.nid_encrypted is not null) as has_nid,
             (i.photo is not null) as has_photo, (i.nid_scan is not null) as has_nid_scan,
+            i.portal_enabled, (i.password_hash is not null) as has_portal_password, i.last_login_at,
             i.created_at, i.updated_at, i.deleted_at,
             (select count(*) from nominees n where n.investor_id = i.id) as nominee_count,
             (select count(*) from investments v where v.investor_id = i.id) as investment_count,
@@ -115,7 +141,22 @@ export async function getPublicInvestorName(investorId, client = undefined) {
 // Writes
 // ---------------------------------------------------------------------------
 export async function createInvestor(data, actor, req) {
-  const { name, mobile, nid, address, notes, status = 'ACTIVE', nominees = null } = data;
+  const { name, mobile, nid, address, notes, status = 'ACTIVE', nominees = null, portal = null } = data;
+
+  // Optional: give the new investor portal access right away. The password is
+  // temporary (must_change_password) whether the admin typed it or we minted
+  // one; the plaintext travels back in the return value exactly once so the
+  // caller can show / SMS it. It is never persisted or written to the audit log.
+  let portalSetup = null;
+  if (portal?.enabled) {
+    const tempPassword = portal.password ? String(portal.password) : generateTempPassword();
+    assertInvestorPasswordPolicy(tempPassword, { mobile, name });
+    portalSetup = {
+      tempPassword,
+      passwordHash: await hashPassword(tempPassword, undefined, { minLength: INVESTOR_PASSWORD_MIN_LENGTH }),
+    };
+  }
+
   return withTransaction(async (client) => {
     const dupe = await query('select id from investors where mobile = ?1 and deleted_at is null', [mobile], client);
     if (dupe.rows[0]) throw conflict('An investor with this mobile number already exists');
@@ -132,12 +173,49 @@ export async function createInvestor(data, actor, req) {
     }
 
     const res = await query(
-      `insert into investors (name, mobile, nid_encrypted, nid_hash, nid_last4, address, notes, status, created_by, updated_by)
-       values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) returning *`,
-      [name, mobile, nidEncrypted, nidHashed, nidLast4, address ?? null, notes ?? null, status, actor?.id ?? null],
+      `insert into investors (name, mobile, nid_encrypted, nid_hash, nid_last4, address, notes, status, created_by, updated_by,
+                              email, alternate_mobile, date_of_birth, gender, father_name, mother_name,
+                              religion, education, present_address, permanent_address)
+       values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19) returning *`,
+      [
+        name,
+        mobile,
+        nidEncrypted,
+        nidHashed,
+        nidLast4,
+        address ?? null,
+        notes ?? null,
+        status,
+        actor?.id ?? null,
+        data.email ?? null,
+        data.alternate_mobile ?? null,
+        data.date_of_birth ?? null,
+        data.gender ?? null,
+        data.father_name ?? null,
+        data.mother_name ?? null,
+        data.religion ?? null,
+        data.education ?? null,
+        data.present_address ?? address ?? null,
+        data.permanent_address ?? null,
+      ],
       client,
     );
     const investor = res.rows[0];
+
+    // Permanent human login id (INV-000123); migration 002 backfilled old rows.
+    investor.member_code = memberCodeForId(investor.id);
+    await query('update investors set member_code = ?2 where id = ?1', [investor.id, investor.member_code], client);
+
+    if (portalSetup) {
+      await query(
+        `update investors set password_hash = ?2, portal_enabled = true, must_change_password = true, password_changed_at = ${NOW}
+          where id = ?1`,
+        [investor.id, portalSetup.passwordHash],
+        client,
+      );
+      investor.portal_enabled = true;
+      investor.must_change_password = true;
+    }
 
     if (nominees && nominees.length > 0) {
       await insertNominees(client, investor.id, nominees);
@@ -149,13 +227,17 @@ export async function createInvestor(data, actor, req) {
         entity: 'investor',
         entityId: investor.id,
         newValue: publicInvestor(investor),
-        meta: { nomineeCount: nominees?.length ?? 0 },
+        meta: { nomineeCount: nominees?.length ?? 0, portalEnabled: Boolean(portalSetup) },
         actor,
         req,
       },
       client,
     );
-    return { ...investor, nominees: await listNominees(investor.id, client) };
+    return {
+      ...investor,
+      nominees: await listNominees(investor.id, client),
+      portal: portalSetup ? { enabled: true, tempPassword: portalSetup.tempPassword } : { enabled: false, tempPassword: null },
+    };
   });
 }
 
@@ -174,7 +256,7 @@ export async function updateInvestor(id, changes, actor, req) {
       return `?${params.length}`;
     };
 
-    for (const field of ['name', 'address', 'notes', 'status']) {
+    for (const field of ['name', 'address', 'notes', 'status', ...PROFILE_FIELDS]) {
       if (changes[field] !== undefined) sets.push(`${field} = ${push(changes[field])}`);
     }
     if (changes.mobile !== undefined && changes.mobile !== before.mobile) {
@@ -231,6 +313,14 @@ export async function setInvestorStatus(id, status, { reason } = {}, actor, req)
       [id, status, actor?.id ?? null],
       client,
     );
+    if (status !== 'ACTIVE') {
+      // A non-active investor must not stay signed in to the portal.
+      await client.query(
+        `update investor_sessions set revoked_at = ${NOW}, revoked_reason = 'INVESTOR_INACTIVE' where investor_id = ?1 and revoked_at is null`,
+        [id],
+      );
+      clearInvestorSessionCache();
+    }
     await audit.record(
       {
         action: status === 'ACTIVE' ? audit.AUDIT_ACTIONS.INVESTOR_RESTORED : audit.AUDIT_ACTIONS.INVESTOR_DEACTIVATED,
@@ -265,6 +355,11 @@ export async function softDeleteInvestor(id, { reason }, actor, req) {
       id,
       actor?.id ?? null,
     ], client);
+    await client.query(
+      `update investor_sessions set revoked_at = ${NOW}, revoked_reason = 'INVESTOR_DELETED' where investor_id = ?1 and revoked_at is null`,
+      [id],
+    );
+    clearInvestorSessionCache();
     await audit.record(
       {
         action: audit.AUDIT_ACTIONS.INVESTOR_DELETED,
@@ -484,7 +579,7 @@ export async function revealNomineeNid(investorId, nomineeId, actor, req) {
 // ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
-export async function setPhoto(investorId, buffer, actor, req) {
+export async function setPhoto(investorId, buffer, actor, req, { selfService = false } = {}) {
   const file = validateUpload(buffer, { kind: 'photo' });
   const res = await query(
     `update investors set photo = ?2, photo_mime = ?3, photo_size = ?4, updated_by = ?5
@@ -497,6 +592,7 @@ export async function setPhoto(investorId, buffer, actor, req) {
     entity: 'investor',
     entityId: investorId,
     newValue: { mime: file.mime, size: file.size },
+    meta: selfService ? { self: true, investorId } : null,
     actor,
     req,
   });
@@ -511,7 +607,7 @@ export async function getPhoto(investorId) {
   return { buffer: row.photo, mime: row.photo_mime || 'image/jpeg', size: row.photo_size };
 }
 
-export async function setNidScan(investorId, buffer, actor, req) {
+export async function setNidScan(investorId, buffer, actor, req, { selfService = false } = {}) {
   const file = validateUpload(buffer, { kind: 'scan' });
   // The ciphertext is an ASCII token; store its bytes so the BLOB column holds binary (same bytes as the bytea column did).
   const encrypted = Buffer.from(encryptScan(file.buffer, investorId), 'utf8');
@@ -526,13 +622,14 @@ export async function setNidScan(investorId, buffer, actor, req) {
     entity: 'investor',
     entityId: investorId,
     newValue: { mime: file.mime, size: file.size, encrypted: true },
+    meta: selfService ? { self: true, investorId } : null,
     actor,
     req,
   });
   return { mime: file.mime, size: file.size };
 }
 
-export async function getNidScan(investorId, actor, req) {
+export async function getNidScan(investorId, actor, req, { selfService = false } = {}) {
   const res = await query('select nid_scan, nid_scan_mime, nid_scan_size from investors where id = ?1', [investorId]);
   const row = res.rows[0];
   if (!row) throw notFound('Investor not found');
@@ -542,7 +639,7 @@ export async function getNidScan(investorId, actor, req) {
     action: audit.AUDIT_ACTIONS.INVESTOR_NID_VIEWED,
     entity: 'investor',
     entityId: investorId,
-    meta: { kind: 'scan' },
+    meta: selfService ? { kind: 'scan', self: true, investorId } : { kind: 'scan' },
     actor,
     req,
   });
@@ -554,8 +651,14 @@ export async function getNidScan(investorId, actor, req) {
 // ---------------------------------------------------------------------------
 export function publicInvestor(row) {
   if (!row) return null;
-  const { nid_encrypted, nid_hash, photo, nid_scan, ...rest } = row;
-  return rest;
+  // password_hash (portal credential, migration 002) must never leave the
+  // service layer - expose only whether one exists.
+  const { nid_encrypted, nid_hash, photo, nid_scan, password_hash, ...rest } = row;
+  return {
+    ...rest,
+    member_code: rest.member_code ?? memberCodeForId(rest.id),
+    has_portal_password: rest.has_portal_password ?? Boolean(password_hash),
+  };
 }
 
 export function presentInvestor(row, role) {

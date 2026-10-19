@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { Alert, Button, Field, Input } from '../../components/ui.jsx';
 
@@ -40,7 +40,7 @@ export function Login() {
       <form className="auth-card" onSubmit={submit}>
         <div className="brand-mark">IP</div>
         <h1>Investor Installment Portal</h1>
-        <p className="muted small">Staff sign-in. Investors do not log in - they receive payment links by SMS.</p>
+        <p className="muted small">Staff sign-in. Investors sign in at the investor portal (link below) or pay from the SMS payment link.</p>
 
         <Alert tone="error">{error}</Alert>
 
@@ -85,8 +85,11 @@ export function Login() {
           {busy ? 'Signing in…' : 'Sign in'}
         </Button>
 
-        <p className="muted small" style={{ marginTop: 14, marginBottom: 0 }}>
+        <p className="muted small" style={{ marginTop: 14, marginBottom: 6 }}>
           Failed attempts are rate limited and the account locks after repeated failures.
+        </p>
+        <p className="small" style={{ marginBottom: 0 }}>
+          Are you an investor? <Link to="/portal/login">Open the investor portal →</Link>
         </p>
       </form>
     </div>

@@ -12,8 +12,13 @@ export async function runHousekeepingJob() {
     `update sessions set revoked_at = ${NOW}, revoked_reason = 'EXPIRED'
       where revoked_at is null and expires_at < ${NOW} returning id`,
   );
+  const investorExpired = await query(
+    `update investor_sessions set revoked_at = ${NOW}, revoked_reason = 'EXPIRED'
+      where revoked_at is null and expires_at < ${NOW} returning id`,
+  );
   const purgeBefore = new Date(Date.now() - 30 * 86_400_000).toISOString();
   const purged = await query('delete from sessions where expires_at < ?1 returning id', [purgeBefore]);
+  const investorPurged = await query('delete from investor_sessions where expires_at < ?1 returning id', [purgeBefore]);
 
   // Safety net for the investment status invariant (cheap, idempotent).
   const stale = await query(
@@ -33,7 +38,13 @@ export async function runHousekeepingJob() {
   }
 
   return {
-    itemsProcessed: expired.rowCount + purged.rowCount + statusFixed,
-    detail: { sessionsExpired: expired.rowCount, sessionsPurged: purged.rowCount, investmentsCompleted: statusFixed },
+    itemsProcessed: expired.rowCount + investorExpired.rowCount + purged.rowCount + investorPurged.rowCount + statusFixed,
+    detail: {
+      sessionsExpired: expired.rowCount,
+      sessionsPurged: purged.rowCount,
+      investorSessionsExpired: investorExpired.rowCount,
+      investorSessionsPurged: investorPurged.rowCount,
+      investmentsCompleted: statusFixed,
+    },
   };
 }

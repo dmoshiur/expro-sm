@@ -101,8 +101,12 @@ export function maskInvestor(row) {
   return {
     ...row,
     mobile: maskMobile(row.mobile),
+    alternate_mobile: row.alternate_mobile ? maskMobile(row.alternate_mobile) : row.alternate_mobile,
     email: row.email ? maskEmail(row.email) : row.email,
     address: row.address ? '***' : null,
+    present_address: row.present_address ? '***' : (row.present_address ?? null),
+    permanent_address: row.permanent_address ? '***' : (row.permanent_address ?? null),
+    date_of_birth: row.date_of_birth ? null : (row.date_of_birth ?? null),
     nid_last4: row.nid_last4 ? `****${String(row.nid_last4).slice(-4)}` : null,
     has_nid: Boolean(row.has_nid),
   };

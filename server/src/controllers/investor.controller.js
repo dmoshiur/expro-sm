@@ -4,9 +4,35 @@ import { badRequest, notFound } from '../utils/errors.js';
 import { parsePagination, paged } from '../utils/pagination.js';
 import { dhakaDate } from '../utils/dates.js';
 import * as investorService from '../services/investor.service.js';
-import { deriveStatus } from '../services/installment.service.js';
+import * as investorAuth from '../services/investor-auth.service.js';
+import { INVESTOR_PASSWORD_MIN_LENGTH } from '../services/crypto.service.js';
+import { deriveStatus, INSTALLMENT_STATUSES } from '../services/installment.service.js';
+import { maskMobile } from '../utils/mask.js';
+import { config } from '../config/index.js';
 import { query } from '../db/client.js';
 import { NOW } from '../db/sql.js';
+
+export const INSTALLMENT_STATUS_FILTERS = INSTALLMENT_STATUSES;
+
+/** Optional profile fields (migration 002), shared by admin + portal forms. */
+export function applyProfileValidators(v) {
+  v.email('email', { required: false });
+  v.mobile('alternate_mobile', { required: false, label: 'Alternate mobile' });
+  v.date('date_of_birth', { required: false, label: 'Date of birth' });
+  const dob = v.values.date_of_birth;
+  if (dob) {
+    if (dob > dhakaDate()) v.fail('date_of_birth', 'Date of birth cannot be in the future');
+    else if (dob < '1900-01-01') v.fail('date_of_birth', 'Date of birth looks too far in the past');
+  }
+  v.oneOf('gender', investorService.GENDERS, { required: false, label: 'Gender' });
+  v.string('father_name', { required: false, max: LIMITS.name, label: 'Father / husband name' });
+  v.string('mother_name', { required: false, max: LIMITS.name, label: "Mother's name" });
+  v.string('religion', { required: false, max: 60, label: 'Religion' });
+  v.string('education', { required: false, max: 120, label: 'Education' });
+  v.string('present_address', { required: false, max: LIMITS.address, label: 'Present address' });
+  v.string('permanent_address', { required: false, max: LIMITS.address, label: 'Permanent address' });
+  return v;
+}
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -110,18 +136,54 @@ export async function create(req, res) {
   v.string('address', { required: false, max: LIMITS.address, label: 'Address' });
   v.string('notes', { required: false, max: LIMITS.notes, label: 'Notes' });
   v.oneOf('status', investorService.INVESTOR_STATUSES, { required: false, label: 'Status' });
+  applyProfileValidators(v);
   validateNominees(v);
   const input = v.result();
+
+  // Optional portal access for the new investor: { enabled, password?, sendSms? }.
+  let portal = null;
+  if (req.body?.portal !== undefined && req.body?.portal !== null) {
+    const pv = new Validator(req.body.portal);
+    pv.bool('enabled', { label: 'Enable portal login' });
+    pv.string('password', { required: false, min: INVESTOR_PASSWORD_MIN_LENGTH, max: LIMITS.password.max, label: 'Temporary portal password' });
+    pv.bool('sendSms', { label: 'Send credentials by SMS' });
+    portal = pv.result();
+  }
 
   // Nominee changes are SUPER_ADMIN only (see docs/permissions.md).
   if (input.nominees?.length && req.admin.role !== 'SUPER_ADMIN') {
     throw badRequest('Only a Super Admin can add nominees');
   }
 
-  const investor = await investorService.createInvestor(input, req.admin, req);
+  const investor = await investorService.createInvestor({ ...input, portal }, req.admin, req);
+  const { portal: portalResult, nominees: createdNominees, ...investorRow } = investor;
+
+  let sms = null;
+  if (portalResult?.enabled && portalResult.tempPassword && portal?.sendSms) {
+    try {
+      const sent = await investorAuth.sendPortalCredentialsSms({
+        investor: investorRow,
+        tempPassword: portalResult.tempPassword,
+        actor: req.admin,
+        req,
+      });
+      sms = { sent: sent.ok, status: sent.status };
+    } catch {
+      sms = { sent: false, status: 'FAILED' };
+    }
+  }
+
   return created(res, {
-    investor: investorService.presentInvestor(investor, req.admin.role),
-    nominees: investorService.presentNominees(investor.nominees ?? [], req.admin.role),
+    investor: investorService.presentInvestor(investorRow, req.admin.role),
+    nominees: investorService.presentNominees(createdNominees ?? [], req.admin.role),
+    portal: {
+      enabled: Boolean(portalResult?.enabled),
+      // Returned exactly once so the admin can hand it to the investor.
+      tempPassword: portalResult?.tempPassword ?? null,
+      member_code: investorRow.member_code,
+      login_url: `${config.publicBaseUrl}/portal/login`,
+      sms,
+    },
   });
 }
 
@@ -133,6 +195,7 @@ export async function update(req, res) {
   v.string('address', { required: false, max: LIMITS.address, label: 'Address' });
   v.string('notes', { required: false, max: LIMITS.notes, label: 'Notes' });
   v.oneOf('status', investorService.INVESTOR_STATUSES, { required: false, label: 'Status' });
+  applyProfileValidators(v);
   // NID edits are sensitive: SUPER_ADMIN only.
   if (req.body?.nid !== undefined) {
     if (req.admin.role !== 'SUPER_ADMIN') throw badRequest('Only a Super Admin can change an NID');
@@ -224,6 +287,59 @@ export async function uploadNidScan(req, res) {
 export async function getNidScan(req, res) {
   const file = await investorService.getNidScan(Number(req.params.id), req.admin, req);
   return binary(res, file.buffer, { mime: file.mime });
+}
+
+// ---------------------------------------------------------------------------
+// Portal access management (admin side of investor self-service login)
+// ---------------------------------------------------------------------------
+/** GET /investors/:id/portal-access */
+export async function portalAccess(req, res) {
+  const portal = await investorAuth.getPortalAccess(Number(req.params.id));
+  if (req.admin.role === 'VIEWER') portal.mobile = maskMobile(portal.mobile);
+  return ok(res, { portal });
+}
+
+/** POST /investors/:id/portal-access/password { password?, sendSms? } */
+export async function setPortalPassword(req, res) {
+  const v = new Validator(req.body);
+  v.string('password', { required: false, min: INVESTOR_PASSWORD_MIN_LENGTH, max: LIMITS.password.max, label: 'Temporary password' });
+  v.bool('sendSms', { label: 'Send credentials by SMS' });
+  const input = v.result();
+
+  const id = Number(req.params.id);
+  const result = await investorAuth.setPortalPasswordByAdmin(id, { password: input.password ?? null }, req.admin, req);
+
+  let sms = null;
+  if (input.sendSms) {
+    try {
+      const investor = await investorService.getInvestor(id);
+      const sent = await investorAuth.sendPortalCredentialsSms({
+        investor,
+        tempPassword: result.tempPassword,
+        actor: req.admin,
+        req,
+      });
+      sms = { sent: sent.ok, status: sent.status };
+    } catch {
+      sms = { sent: false, status: 'FAILED' };
+    }
+  }
+  return ok(res, { tempPassword: result.tempPassword, generated: result.generated, portal: result.portal, sms });
+}
+
+/** POST /investors/:id/portal-access/enabled { enabled } */
+export async function setPortalEnabled(req, res) {
+  const v = new Validator(req.body);
+  v.bool('enabled', { required: true, label: 'Enabled' });
+  const { enabled } = v.result();
+  const portal = await investorAuth.setPortalEnabled(Number(req.params.id), enabled, req.admin, req);
+  return ok(res, { portal });
+}
+
+/** POST /investors/:id/portal-access/revoke-sessions */
+export async function revokePortalSessions(req, res) {
+  const portal = await investorAuth.revokePortalSessionsByAdmin(Number(req.params.id), req.admin, req);
+  return ok(res, { portal });
 }
 
 export function notFoundInvestor() {

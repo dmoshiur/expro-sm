@@ -4,6 +4,10 @@ import { api } from './api.js';
 export const investorsApi = {
   list: (params) => api.get('/investors', params),
   get: (id) => api.get(`/investors/${id}`),
+  portalAccess: (id) => api.get(`/investors/${id}/portal-access`),
+  setPortalPassword: (id, payload) => api.post(`/investors/${id}/portal-access/password`, payload),
+  setPortalEnabled: (id, enabled) => api.post(`/investors/${id}/portal-access/enabled`, { enabled }),
+  revokePortalSessions: (id) => api.post(`/investors/${id}/portal-access/revoke-sessions`),
   create: (payload) => api.post('/investors', payload),
   update: (id, payload) => api.patch(`/investors/${id}`, payload),
   setStatus: (id, payload) => api.post(`/investors/${id}/status`, payload),
@@ -100,4 +104,26 @@ export const publicApi = {
   viewLink: (token) => api.get(`/public/pay/${encodeURIComponent(token)}`),
   start: (token) => api.post(`/public/pay/${encodeURIComponent(token)}/start`, {}),
   verify: (token, paymentId) => api.post(`/public/pay/${encodeURIComponent(token)}/verify`, { paymentId }),
+};
+
+/** Investor self-service portal (own session cookie, own data only). */
+export const portalApi = {
+  login: (payload) => api.post('/portal/auth/login', payload),
+  logout: () => api.post('/portal/auth/logout'),
+  me: () => api.get('/portal/auth/me'),
+  changePassword: (payload) => api.post('/portal/auth/change-password', payload),
+  revokeOtherSessions: () => api.post('/portal/auth/sessions/revoke-others'),
+  dashboard: () => api.get('/portal/dashboard'),
+  profile: () => api.get('/portal/profile'),
+  updateProfile: (payload) => api.patch('/portal/profile', payload),
+  investments: () => api.get('/portal/investments'),
+  installments: (params) => api.get('/portal/installments', params),
+  payments: () => api.get('/portal/payments'),
+  payLink: (installmentId) => api.post(`/portal/installments/${installmentId}/pay-link`),
+  uploadPhoto: (file) => api.upload('/portal/photo', file, file.type),
+  uploadNidScan: (file) => api.upload('/portal/nid-scan', file, file.type),
+  photoUrl: '/api/portal/photo',
+  nidScanUrl: '/api/portal/nid-scan',
+  openReceipt: (paymentId) => api.openHtml(`/portal/payments/${paymentId}/receipt`, { print: 'true' }),
+  statementCsv: () => api.download('/portal/statement.csv'),
 };

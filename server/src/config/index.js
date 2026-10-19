@@ -77,6 +77,12 @@ function loadConfig(env = process.env) {
       cookieSecure: isProd ? true : bool(env, 'COOKIE_SECURE', false),
       lockoutThreshold: int(env, 'ADMIN_LOCKOUT_THRESHOLD', 5),
       lockoutMinutes: int(env, 'ADMIN_LOCKOUT_MINUTES', 15),
+      // Investor portal sessions are a separate system: own cookie, longer
+      // lifetime (investors check dues from their phone, not a desk), own lockout.
+      investorCookieName: str(env, 'INVESTOR_COOKIE_NAME', 'ip_investor_session'),
+      investorSessionTtlHours: int(env, 'INVESTOR_SESSION_TTL_HOURS', 72),
+      investorLockoutThreshold: int(env, 'INVESTOR_LOCKOUT_THRESHOLD', 5),
+      investorLockoutMinutes: int(env, 'INVESTOR_LOCKOUT_MINUTES', 15),
       maxUploadBytes: int(env, 'MAX_UPLOAD_BYTES', 2 * 1024 * 1024),
       rateLimits: {
         login: { windowMs: int(env, 'RATE_LIMIT_LOGIN_WINDOW_MS', 15 * 60_000), max: int(env, 'RATE_LIMIT_LOGIN_MAX', 10) },

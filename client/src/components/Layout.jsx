@@ -52,7 +52,10 @@ export function Layout() {
           )}
         </nav>
         <div className="sidebar-footer">
-          Asia/Dhaka · poisha-accurate
+          <NavLink to="/portal/login" style={{ color: '#cdd8f0' }}>
+            Investor portal ↗
+          </NavLink>
+          <div>Asia/Dhaka · poisha-accurate</div>
         </div>
       </aside>
 

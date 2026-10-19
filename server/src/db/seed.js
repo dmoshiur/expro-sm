@@ -155,7 +155,12 @@ async function main() {
   }
   if (sample) {
     process.stdout.write(`\nSample data: ${sample.investors} investor(s), ${sample.investments} investment(s), ${sample.installments} installment(s)\n`);
-    process.stdout.write(`Sample investor mobile: ${sample.mobile} (no login required - payment links are sent by SMS)\n`);
+    process.stdout.write(`Sample investor mobile: ${sample.mobile}\n`);
+    if (sample.portalPassword) {
+      process.stdout.write(
+        `Investor portal demo login (${sample.memberCode}): mobile ${sample.mobile} / password ${sample.portalPassword} at /portal/login (temporary - change on first login)\n`,
+      );
+    }
     if (sample.payUrl) process.stdout.write(`Sample payment link: ${sample.payUrl}\n`);
   }
   process.stdout.write('=============================================\n\n');
@@ -190,8 +195,13 @@ async function createSampleData(actor) {
     },
   ];
 
+  // The first sample investor gets portal access with a known temporary
+  // password (override with SEED_INVESTOR_PASSWORD) + a mostly complete
+  // profile, so the investor portal can be tried immediately after seeding.
+  const portalPassword = process.env.SEED_INVESTOR_PASSWORD || 'Investor#2026Portal';
+
   const createdInvestors = [];
-  for (const investor of investors) {
+  for (const [index, investor] of investors.entries()) {
     const row = await createInvestor(
       {
         name: investor.name,
@@ -201,6 +211,19 @@ async function createSampleData(actor) {
         status: 'ACTIVE',
         notes: 'Created by seed script',
         nominees: investor.nominees,
+        ...(index === 0
+          ? {
+              email: 'demo.investor@test.local',
+              date_of_birth: '1990-05-14',
+              gender: 'MALE',
+              father_name: 'Abdul Karim',
+              mother_name: 'Fatema Begum',
+              religion: 'Islam',
+              present_address: investor.address,
+              permanent_address: 'Village North Char, Bogura',
+              portal: { enabled: true, password: portalPassword },
+            }
+          : {}),
       },
       actor,
       null,
@@ -261,6 +284,8 @@ async function createSampleData(actor) {
     investments: investments.length,
     installments: totalInstallments,
     mobile: investors[0].mobile,
+    memberCode: createdInvestors[0].member_code,
+    portalPassword: createdInvestors[0].portal?.tempPassword ?? null,
     payUrl: link.url,
   };
 }

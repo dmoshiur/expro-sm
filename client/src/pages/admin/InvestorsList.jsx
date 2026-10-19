@@ -102,9 +102,12 @@ export function InvestorsList() {
                   key: 'name',
                   header: <span role="button" onClick={() => onSort('name')}>Name {sort === 'name' ? (dir === 'asc' ? '↑' : '↓') : ''}</span>,
                   render: (row) => (
-                    <Link to={`/investors/${row.id}`} style={{ fontWeight: 600 }}>
-                      {row.name}
-                    </Link>
+                    <>
+                      <Link to={`/investors/${row.id}`} style={{ fontWeight: 600 }}>
+                        {row.name}
+                      </Link>
+                      <div className="small muted mono">{row.member_code}</div>
+                    </>
                   ),
                 },
                 {
@@ -113,6 +116,20 @@ export function InvestorsList() {
                   render: (row) => <span className="mono">{row.mobile}</span>,
                 },
                 { key: 'status', header: 'Status', render: (row) => <Badge status={row.status} /> },
+                {
+                  key: 'portal_enabled',
+                  header: 'Portal login',
+                  render: (row) =>
+                    row.portal_enabled ? (
+                      <span className="badge ok" title={row.last_login_at ? `Last login ${row.last_login_at}` : 'Never logged in'}>
+                        {row.last_login_at ? 'Active' : 'Enabled'}
+                      </span>
+                    ) : row.has_portal_password ? (
+                      <span className="badge muted">Disabled</span>
+                    ) : (
+                      <span className="badge warn">Not set up</span>
+                    ),
+                },
                 { key: 'nominee_count', header: 'Nominees', align: 'right' },
                 { key: 'investment_count', header: 'Investments', align: 'right' },
                 { key: 'total_invested', header: 'Invested', align: 'right', render: (row) => formatBDT(row.total_invested) },

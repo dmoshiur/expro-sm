@@ -3,10 +3,20 @@
  * global 401 handler. No axios, no CORS - the SPA is served by the same
  * Express process in production and proxied in development.
  */
-let onUnauthorized = null;
+/**
+ * 401 subscribers receive (error, path). Two independent login systems use
+ * this - admin (/api/auth, /api/investors, ...) and investor portal
+ * (/api/portal/*) - and each only clears its own session state.
+ */
+const unauthorizedHandlers = new Set();
+
+export function onUnauthorized(handler) {
+  unauthorizedHandlers.add(handler);
+  return () => unauthorizedHandlers.delete(handler);
+}
 
 export function setUnauthorizedHandler(handler) {
-  onUnauthorized = handler;
+  return onUnauthorized(handler);
 }
 
 export class ApiError extends Error {
@@ -55,7 +65,15 @@ async function request(method, path, { body, params, raw, headers } = {}) {
 
   if (!response.ok) {
     const error = payload?.error ?? {};
-    if (response.status === 401 && onUnauthorized) onUnauthorized(error);
+    if (response.status === 401) {
+      for (const handler of unauthorizedHandlers) {
+        try {
+          handler(error, path);
+        } catch {
+          /* a broken subscriber must not break requests */
+        }
+      }
+    }
     throw new ApiError(
       response.status,
       error.code ?? 'ERROR',

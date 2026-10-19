@@ -18,6 +18,12 @@ router.post('/:id/status', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), asyncHandle
 router.delete('/:id', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), asyncHandler(ctrl.remove));
 router.post('/:id/restore', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), asyncHandler(ctrl.restore));
 
+// Investor portal access (self-service login) management.
+router.get('/:id/portal-access', asyncHandler(ctrl.portalAccess));
+router.post('/:id/portal-access/password', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), asyncHandler(ctrl.setPortalPassword));
+router.post('/:id/portal-access/enabled', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), asyncHandler(ctrl.setPortalEnabled));
+router.post('/:id/portal-access/revoke-sessions', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), asyncHandler(ctrl.revokePortalSessions));
+
 // Nominees and NID data: SUPER_ADMIN only.
 router.post('/:id/nominees', requireSuperAdmin, asyncHandler(ctrl.replaceNominees));
 router.patch('/:id/nominees/:nomineeId', requireSuperAdmin, asyncHandler(ctrl.updateNominee));
