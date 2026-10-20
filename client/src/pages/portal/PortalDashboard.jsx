@@ -6,6 +6,7 @@ import { useToast } from '../../context/ToastContext.jsx';
 import { Alert, Badge, Button, Card, Kpi, ProgressBar, Spinner, Table } from '../../components/ui.jsx';
 import { WalletCard } from '../../components/WalletCard.jsx';
 import { AlertBanners } from '../../components/AlertBanners.jsx';
+import { PensionProgress } from '../../components/PensionProgress.jsx';
 import { formatBDT, formatDate, formatDateTime, dueLabel } from '../../utils/format.js';
 
 export function PortalDashboard() {
@@ -31,27 +32,31 @@ export function PortalDashboard() {
     }
   };
 
-  const progress = summary.total_installments
-    ? Math.round((summary.paid_installments / summary.total_installments) * 100)
-    : 0;
+  const firstName = profile.name.split(' ')[0];
+  const initials = profile.name
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('');
 
   return (
     <>
-      <section className="profile-head">
+      <section className="profile-head hero" style={{ marginBottom: 16 }}>
         <div className="photo-frame">
           {profile.has_photo ? (
             <img src={`${portalApi.photoUrl}?v=${encodeURIComponent(profile.last_login_at ?? '')}`} alt="My photo" />
           ) : (
             <span className="avatar big" style={{ boxShadow: 'none' }}>
-              {profile.name.split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('')}
+              {initials}
             </span>
           )}
         </div>
         <div className="who-main">
-          <h1>Assalamu alaikum, {profile.name.split(' ')[0]}</h1>
+          <div className="small" style={{ fontWeight: 600 }}>Welcome back</div>
+          <h1>Hello, {firstName}</h1>
           <div className="who-meta">
-            <span className="mono">{profile.member_code}</span> · Member since {formatDate(profile.member_since)} · Last
-            login {profile.last_login_at ? formatDateTime(profile.last_login_at) : '—'}
+            <span className="mono">{profile.member_code}</span> · Member since {formatDate(profile.member_since)}
+            {profile.last_login_at ? <> · Last login {formatDateTime(profile.last_login_at)}</> : null}
           </div>
           <div className="pill-row" style={{ marginTop: 8 }}>
             <Badge status={profile.status} />
@@ -62,11 +67,11 @@ export function PortalDashboard() {
           </div>
         </div>
         <div className="actions">
-          <Button className="sm" onClick={() => navigate('/portal/profile')}>My profile</Button>
-          <Button className="sm ghost" title="Print-ready statement - use Print → Save as PDF" onClick={() => portalApi.statementPrint()}>
-            PDF statement
+          <Button className="sm primary" onClick={() => navigate('/portal/digital-id')}>Digital ID</Button>
+          <Button className="sm" title="Print-ready statement - use Print → Save as PDF" onClick={() => portalApi.statementPrint()}>
+            Statement
           </Button>
-          <Button className="sm ghost" title="Print-ready membership certificate" onClick={() => portalApi.certificate()}>
+          <Button className="sm" title="Print-ready membership certificate" onClick={() => portalApi.certificate()}>
             Certificate
           </Button>
         </div>
@@ -76,55 +81,36 @@ export function PortalDashboard() {
         alerts={alerts}
         onAction={(target) => {
           if (target === 'support') navigate('/portal/support');
-          else if (target === 'installments' || target === 'wallet') navigate(`/portal/profile?tab=${target}`);
+          else if (target === 'installments' || target === 'wallet') navigate(`/portal/payment`);
           else navigate('/portal/profile');
         }}
       />
 
-      <div className="grid cols-3" style={{ marginBottom: 14 }}>
-        <WalletCard
-          summary={wallet}
-          title="My wallet"
-          subtitle="Live ledger balance"
-          actions={
-            <>
-              <Button className="sm light" onClick={() => navigate('/portal/profile?tab=wallet')}>Open wallet</Button>
-            </>
-          }
-        />
-        <Card title="Pension progress">
-          <ProgressBar
-            value={progress}
-            label={`${summary.paid_installments}/${summary.total_installments} installments`}
-            size="lg"
-            tone={summary.overdue_count ? 'warn' : ''}
+      <div className="grid cols-2" style={{ marginBottom: 14, alignItems: 'start' }}>
+        <PensionProgress summary={summary} overdue={summary.overdue_count > 0} />
+        <div className="stack" style={{ gap: 14 }}>
+          <WalletCard
+            summary={wallet}
+            title="My wallet"
+            subtitle="Live ledger balance"
+            actions={
+              <>
+                <Button className="sm light" onClick={() => navigate('/portal/payment')}>Payment &amp; wallet</Button>
+              </>
+            }
           />
-          <div className="stat-line"><span>Total invested</span><strong>{formatBDT(summary.total_invested)}</strong></div>
-          <div className="stat-line"><span>Remaining</span><strong>{formatBDT(summary.total_remaining)}</strong></div>
-          <div className="stat-line"><span>Overdue</span><strong>{formatBDT(summary.overdue_amount)}</strong></div>
-          <div className="stat-line">
-            <span>Plans</span>
-            <strong>{summary.active_investments} active · {summary.completed_investments} completed</strong>
-          </div>
-          <Link className="btn sm ghost" to="/portal/profile?tab=installments" style={{ marginTop: 10 }}>View schedule →</Link>
-        </Card>
-        <Card title="Profile completeness">
-          <ProgressBar value={completion.percent} label={`${completion.done}/${completion.total} details`} size="lg" />
-          {completion.missing.length ? (
-            <>
-              <p className="small muted" style={{ marginTop: 10 }}>
-                Still missing: {completion.missing.map((m) => m.label).join(', ')}.
-              </p>
-              <Link className="btn sm primary" to="/portal/profile">Complete my profile</Link>
-            </>
-          ) : (
-            <p className="small" style={{ marginTop: 10 }}>✓ Your profile is complete. Thank you!</p>
-          )}
-          <div className="stack small" style={{ marginTop: 12 }}>
-            <div className="mono">{profile.mobile}</div>
-            {profile.email ? <div className="muted">{profile.email}</div> : null}
-          </div>
-        </Card>
+          <Link
+            to="/portal/donates"
+            className="flex items-center gap-4 rounded-2xl bg-brand-gradient p-4 text-white shadow-soft-lg no-underline hover:no-underline"
+          >
+            <span className="grid h-11 w-11 flex-none place-items-center rounded-xl bg-white/20 text-xl" aria-hidden="true">♡</span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-base font-bold">Donate to a welfare fund</span>
+              <span className="block text-sm text-sky-100">Pay securely through the gateway and get a receipt.</span>
+            </span>
+            <span className="text-lg" aria-hidden="true">→</span>
+          </Link>
+        </div>
       </div>
 
       <div className="grid cols-4" style={{ marginBottom: 14 }}>
@@ -145,7 +131,7 @@ export function PortalDashboard() {
 
       <Card
         title="Upcoming installments"
-        actions={<Link className="btn sm ghost" to="/portal/installments">View all</Link>}
+        actions={<Link className="btn sm ghost" to="/portal/payment">View all</Link>}
       >
         <Table
           rows={upcoming}
@@ -154,7 +140,7 @@ export function PortalDashboard() {
             { key: 'serial', header: 'Installment', render: (row) => `#${row.serial}${row.investment_title ? ` · ${row.investment_title}` : ''}` },
             { key: 'due_date', header: 'Due date', render: (row) => <>{formatDate(row.due_date)} <span className="small muted">({dueLabel(row.due_date)})</span></> },
             { key: 'outstanding', header: 'Amount due', align: 'right', render: (row) => formatBDT(row.outstanding) },
-            { key: 'status', header: 'Status', render: (row) => <Badge status={row.effective_status} /> },
+            { key: 'status', header: 'Status', render: (row) => <Badge status={profile.is_frozen && row.effective_status !== 'PAID' ? 'SUSPENDED' : row.effective_status} /> },
             {
               key: 'pay',
               header: '',
@@ -169,30 +155,47 @@ export function PortalDashboard() {
         />
       </Card>
 
-      <Card title="Recent payments" actions={<Link className="btn sm ghost" to="/portal/payments">View all</Link>}>
-        <Table
-          rows={recent}
-          empty="No payments yet."
-          columns={[
-            { key: 'paid_at', header: 'Date', render: (row) => (row.paid_at ? formatDateTime(row.paid_at) : formatDateTime(row.created_at)) },
-            { key: 'installment_serial', header: 'Installment', render: (row) => `#${row.installment_serial}` },
-            { key: 'amount', header: 'Amount', align: 'right', render: (row) => formatBDT(row.amount) },
-            { key: 'method', header: 'Method' },
-            { key: 'trx_id', header: 'Trx / Ref', mono: true, render: (row) => row.trx_id || row.manual_reference || '—' },
-            {
-              key: 'receipt',
-              header: '',
-              align: 'right',
-              render: (row) =>
-                row.status === 'SUCCESS' ? (
-                  <Button className="sm ghost" onClick={() => portalApi.openReceipt(row.id)}>
-                    Receipt
-                  </Button>
-                ) : null,
-            },
-          ]}
-        />
-      </Card>
+      <div className="grid cols-2" style={{ marginTop: 14, alignItems: 'start' }}>
+        <Card title="Recent payments" actions={<Link className="btn sm ghost" to="/portal/payment">View all</Link>}>
+          <Table
+            rows={recent}
+            empty="No payments yet."
+            columns={[
+              { key: 'paid_at', header: 'Date', render: (row) => (row.paid_at ? formatDateTime(row.paid_at) : formatDateTime(row.created_at)) },
+              { key: 'installment_serial', header: 'Installment', render: (row) => `#${row.installment_serial}` },
+              { key: 'amount', header: 'Amount', align: 'right', render: (row) => formatBDT(row.amount) },
+              {
+                key: 'receipt',
+                header: '',
+                align: 'right',
+                render: (row) =>
+                  row.status === 'SUCCESS' ? (
+                    <Button className="sm ghost" onClick={() => portalApi.openReceipt(row.id)}>
+                      Receipt
+                    </Button>
+                  ) : null,
+              },
+            ]}
+          />
+        </Card>
+        <Card title="Profile completeness">
+          <ProgressBar value={completion.percent} label={`${completion.done}/${completion.total} details`} size="lg" />
+          {completion.missing.length ? (
+            <>
+              <p className="small muted" style={{ marginTop: 10 }}>
+                Still missing: {completion.missing.map((m) => m.label).join(', ')}.
+              </p>
+              <Link className="btn sm primary" to="/portal/profile">Complete my profile</Link>
+            </>
+          ) : (
+            <p className="small" style={{ marginTop: 10 }}>✓ Your profile is complete. Thank you!</p>
+          )}
+          <div className="stack small" style={{ marginTop: 12 }}>
+            <div className="mono">{profile.mobile}</div>
+            {profile.email ? <div className="muted">{profile.email}</div> : null}
+          </div>
+        </Card>
+      </div>
     </>
   );
 }

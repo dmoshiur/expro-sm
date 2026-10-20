@@ -71,6 +71,11 @@ export const paymentsApi = {
   receiptJson: (id) => api.get(`/payments/${id}/receipt.json`),
 };
 
+/** Staff view of donations (read-only). */
+export const donationsApi = {
+  list: (params) => api.get('/donations', params),
+};
+
 export const dashboardApi = {
   summary: () => api.get('/dashboard'),
 };
@@ -144,20 +149,15 @@ export const portalApi = {
   installments: (params) => api.get('/portal/installments', params),
   payments: () => api.get('/portal/payments'),
   payLink: (installmentId) => api.post(`/portal/installments/${installmentId}/pay-link`),
-  uploadPhoto: (file) => api.upload('/portal/photo', file, file.type),
-  uploadNidScan: (file) => api.upload('/portal/nid-scan', file, file.type),
   photoUrl: '/api/portal/photo',
-  nidScanUrl: '/api/portal/nid-scan',
   openReceipt: (paymentId) => api.openHtml(`/portal/payments/${paymentId}/receipt`, { print: 'true' }),
   statementCsv: () => api.download('/portal/statement.csv'),
   // Wallet: live balance, ledger and self-service requests.
   wallet: () => api.get('/portal/wallet'),
   requestWallet: (payload) => api.post('/portal/wallet/requests', payload),
-  // Document slots + nominee photos.
+  // Document slots + nominee photos (view only: uploads are staff-only).
   documents: () => api.get('/portal/documents'),
-  uploadDocument: (kind, file) => api.upload(`/portal/documents/${kind}`, file, file.type),
   documentUrl: (kind, bust = '') => `/api/portal/documents/${kind}/file${bust ? `?v=${bust}` : ''}`,
-  uploadNomineePhoto: (nomineeId, file) => api.upload(`/portal/nominees/${nomineeId}/photo`, file, file.type),
   nomineePhotoUrl: (nomineeId, bust = '') => `/api/portal/nominees/${nomineeId}/photo${bust ? `?v=${bust}` : ''}`,
   // Support / inquiries.
   tickets: () => api.get('/portal/support/tickets'),
@@ -165,6 +165,12 @@ export const portalApi = {
   ticket: (id) => api.get(`/portal/support/tickets/${id}`),
   replyTicket: (id, payload) => api.post(`/portal/support/tickets/${id}/messages`, payload),
   closeTicket: (id) => api.post(`/portal/support/tickets/${id}/close`),
+  // Donates: real donations through the payment gateway, with stored receipts.
+  donations: () => api.get('/portal/donations'),
+  createDonation: (payload) => api.post('/portal/donations', payload),
+  donation: (id) => api.get(`/portal/donations/${id}`),
+  verifyDonation: (id) => api.post(`/portal/donations/${id}/verify`),
+  openDonationReceipt: (id) => api.openHtml(`/portal/donations/${id}/receipt`, { print: 'true' }),
   // Printable documents (print / save as PDF in the browser).
   certificate: () => api.openHtml('/portal/certificate', { print: 'true' }),
   statementPrint: () => api.openHtml('/portal/statement.html', { print: 'true' }),

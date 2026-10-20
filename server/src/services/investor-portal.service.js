@@ -21,20 +21,40 @@ import * as audit from './audit.service.js';
 
 const OPEN = `('PENDING','PARTIALLY_PAID','OVERDUE')`;
 
+/**
+ * Identity data is set by the office and is read-only in the investor portal:
+ * names, date of birth, father / mother names (as printed on the NID), mobile,
+ * NID and every status field. Contact details and personal info stay editable.
+ * Documents (photo, NID, signature, nominee photos) are uploaded by staff only.
+ */
+export const IDENTITY_LOCKED_FIELDS = [
+  'name',
+  'name_bangla',
+  'mobile',
+  'date_of_birth',
+  'father_name',
+  'mother_name',
+  'nid',
+  'status',
+  'membership_status',
+  'member_code',
+];
+export const PORTAL_EDITABLE_FIELDS = PROFILE_FIELDS.filter((field) => !IDENTITY_LOCKED_FIELDS.includes(field));
+
 // Profile completeness checklist: what a "proper" member profile contains.
 const COMPLETION_CHECKS = [
-  ['photo', 'Profile photo', (i) => Boolean(i.has_photo)],
-  ['name_bangla', 'Name (Bangla)', (i) => Boolean(i.name_bangla)],
+  ['photo', 'Profile photo - ask the office', (i) => Boolean(i.has_photo)],
+  ['name_bangla', 'Name (Bangla) - ask the office', (i) => Boolean(i.name_bangla)],
   ['email', 'Email address', (i) => Boolean(i.email)],
   ['alternate_mobile', 'Alternate mobile', (i) => Boolean(i.alternate_mobile)],
-  ['date_of_birth', 'Date of birth', (i) => Boolean(i.date_of_birth)],
+  ['date_of_birth', 'Date of birth - ask the office', (i) => Boolean(i.date_of_birth)],
   ['gender', 'Gender', (i) => Boolean(i.gender)],
-  ['father_name', 'Father / husband name', (i) => Boolean(i.father_name)],
-  ['mother_name', "Mother's name", (i) => Boolean(i.mother_name)],
+  ['father_name', 'Father / husband name - ask the office', (i) => Boolean(i.father_name)],
+  ['mother_name', "Mother's name - ask the office", (i) => Boolean(i.mother_name)],
   ['present_address', 'Present address', (i) => Boolean(i.present_address || i.address)],
   ['permanent_address', 'Permanent address', (i) => Boolean(i.permanent_address)],
   ['nid', 'NID number (ask the office)', (i) => Boolean(i.nid_last4)],
-  ['nid_scan', 'NID scan', (i) => Boolean(i.has_nid_scan)],
+  ['nid_scan', 'NID scan - ask the office', (i) => Boolean(i.has_nid_scan)],
   ['nominees', 'Nominee (ask the office)', (i) => (i.nominees?.length ?? 0) > 0],
 ];
 
@@ -104,6 +124,13 @@ async function loadOwnRow(investorId, client = undefined) {
   return res.rows[0];
 }
 
+/** What the investor may change, as the UI needs to render it. */
+export const PORTAL_POLICY = {
+  locked_fields: IDENTITY_LOCKED_FIELDS,
+  editable_fields: PORTAL_EDITABLE_FIELDS,
+  documents: 'office-managed',
+};
+
 export async function getOwnProfile(investorId) {
   const row = await loadOwnRow(investorId);
   const nominees = await query(
@@ -111,12 +138,12 @@ export async function getOwnProfile(investorId) {
     [investorId],
   );
   const profile = ownProfileShape(row, nominees.rows);
-  return { profile, completion: profileCompletion(profile) };
+  return { profile, completion: profileCompletion(profile), policy: PORTAL_POLICY };
 }
 
 /**
- * Self-service profile update. Only PROFILE_FIELDS may change; name/mobile/
- * NID/status are identity data managed by the office.
+ * Self-service profile update. Only PORTAL_EDITABLE_FIELDS may change; the
+ * identity fields above are rejected by the controller and ignored here too.
  */
 export async function updateOwnProfile(investorId, changes, req) {
   return withTransaction(async (client) => {
@@ -128,7 +155,7 @@ export async function updateOwnProfile(investorId, changes, req) {
       return `?${params.length}`;
     };
     const changedFields = [];
-    for (const field of PROFILE_FIELDS) {
+    for (const field of PORTAL_EDITABLE_FIELDS) {
       if (changes[field] !== undefined && changes[field] !== (before[field] ?? undefined)) {
         sets.push(`${field} = ${push(changes[field])}`);
         changedFields.push(field);
@@ -161,11 +188,11 @@ async function getProfileWithClient(investorId, client) {
     client,
   );
   const profile = ownProfileShape(row, nominees.rows);
-  return { profile, completion: profileCompletion(profile) };
+  return { profile, completion: profileCompletion(profile), policy: PORTAL_POLICY };
 }
 
 function pickProfile(row) {
-  return Object.fromEntries(PROFILE_FIELDS.map((f) => [f, row[f] ?? null]));
+  return Object.fromEntries(PORTAL_EDITABLE_FIELDS.map((f) => [f, row[f] ?? null]));
 }
 
 // ---------------------------------------------------------------------------
@@ -191,7 +218,8 @@ export async function getDashboard(investorId) {
        coalesce(sum(case when inst.status in ${OPEN} and inst.due_date < ?2 then inst.amount - inst.amount_paid else 0 end), 0) as overdue_amount,
        coalesce(sum(case when inst.status in ${OPEN} and inst.due_date < ?2 then 1 else 0 end), 0) as overdue_count,
        coalesce(sum(case when inst.status = 'PAID' then 1 else 0 end), 0) as paid_installments,
-       count(*) as total_installments
+       count(*) as total_installments,
+       max(inst.due_date) as maturity_date
      from installments inst
      join investments v on v.id = inst.investment_id
      where v.investor_id = ?1 and v.status <> 'CANCELLED' and inst.status <> 'CANCELLED'`,
@@ -221,6 +249,8 @@ export async function getDashboard(investorId) {
       completed_investments: Number(totals.completed_investments),
       paid_installments: Number(inst.paid_installments),
       total_installments: Number(inst.total_installments),
+      /** Last scheduled due date across active plans (pension maturity forecast). */
+      maturity_date: inst.maturity_date ?? null,
       next_due: upcoming[0]
         ? {
             installment_id: upcoming[0].id,

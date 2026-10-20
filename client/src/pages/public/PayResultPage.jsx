@@ -60,7 +60,7 @@ export function PayResultPage() {
   return (
     <div className="public-wrap">
       <div className="pay-card">
-        <div className="pay-head" style={{ background: isSuccess ? '#0f7a4a' : isPending ? '#a15c07' : '#b42318' }}>
+        <div className="pay-head" style={{ background: isSuccess ? '#0284c7' : isPending ? '#a15c07' : '#b42318' }}>
           <h1 style={{ margin: 0, color: '#fff', fontSize: '1.2rem' }}>{headline}</h1>
         </div>
         <div className="pay-body">

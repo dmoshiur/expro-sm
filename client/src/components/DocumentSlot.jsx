@@ -1,6 +1,7 @@
 /**
- * Reusable document slot: drag & drop upload, image preview, cropper and
- * (for staff) a Verify / Reject overlay.
+ * Reusable document slot: image preview, plus (for staff, when canUpload is set)
+ * drag & drop upload, cropper and a Verify / Reject overlay. Without canUpload the
+ * slot is view-only, which is how the investor portal shows every document.
  *
  * One component drives all four profile documents — Photo, NID front, NID back
  * and Signature — in the admin profile and the investor portal. The parent owns
@@ -127,30 +128,38 @@ export function DocumentSlot({
         ) : (
           <img className={`doc-thumb ${kind === 'SIGNATURE' ? 'contain' : ''}`} src={fileUrl} alt={label} onClick={() => setViewing(true)} />
         )
-      ) : (
+      ) : canUpload ? (
         <div
           className={`doc-drop ${dragging ? 'dragover' : ''}`}
           role="button"
-          tabIndex={canUpload ? 0 : -1}
+          tabIndex={0}
           aria-label={`Upload ${label}`}
-          onClick={() => canUpload && !busy && inputRef.current?.click()}
+          onClick={() => !busy && inputRef.current?.click()}
           onKeyDown={(event) => {
-            if (canUpload && (event.key === 'Enter' || event.key === ' ')) inputRef.current?.click();
+            if (event.key === 'Enter' || event.key === ' ') inputRef.current?.click();
           }}
           onDragOver={(event) => {
             event.preventDefault();
-            if (canUpload) setDragging(true);
+            setDragging(true);
           }}
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
-          style={canUpload ? undefined : { cursor: 'default', opacity: 0.85 }}
         >
           <div>
             <div className="doc-icon" aria-hidden="true">{dragging ? '⬇' : '＋'}</div>
-            <div style={{ fontWeight: 600, color: 'var(--text)' }}>{canUpload ? `Upload ${label.toLowerCase()}` : 'Not uploaded'}</div>
-            <div className="doc-hint">{canUpload ? 'Drag & drop or click · JPEG/PNG' : 'Ask the office to upload this document'}</div>
+            <div style={{ fontWeight: 600, color: 'var(--text)' }}>{`Upload ${label.toLowerCase()}`}</div>
+            <div className="doc-hint">Drag & drop or click · JPEG/PNG</div>
           </div>
           {busy ? <div className="doc-busy">Uploading…</div> : null}
+        </div>
+      ) : (
+        // View-only (investor portal): nothing to click, so no drop zone is shown.
+        <div className="doc-drop doc-readonly" aria-disabled="true">
+          <div>
+            <div className="doc-icon" aria-hidden="true">🗂</div>
+            <div style={{ fontWeight: 600, color: 'var(--text)' }}>Not on file yet</div>
+            <div className="doc-hint">Managed by the office. Ask support if this is wrong.</div>
+          </div>
         </div>
       )}
 

@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import { DrawerBackdrop, DrawerToggle, useDrawer } from './Drawer.jsx';
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: '▤', exact: true },
@@ -9,6 +10,7 @@ const NAV = [
   { to: '/installments', label: 'Installments', icon: '≡' },
   { group: 'Money' },
   { to: '/payments', label: 'Payments', icon: '৳' },
+  { to: '/donations', label: 'Donations', icon: '♡' },
   { to: '/reports/collections', label: 'Collections', icon: '◔' },
   { to: '/reports/due', label: 'Due & overdue', icon: '⏱' },
   { to: '/support', label: 'Support inbox', icon: '✉' },
@@ -22,6 +24,7 @@ const NAV = [
 export function Layout() {
   const { admin, logout } = useAuth();
   const navigate = useNavigate();
+  const drawer = useDrawer();
 
   const onLogout = async () => {
     await logout();
@@ -30,7 +33,11 @@ export function Layout() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <DrawerBackdrop open={drawer.open} onClose={() => drawer.setOpen(false)} />
+      <aside className={`sidebar ${drawer.open ? 'open' : ''}`} id="app-drawer" aria-label="Main menu">
+        <button type="button" className="drawer-close" aria-label="Close menu" onClick={() => drawer.setOpen(false)}>
+          ✕
+        </button>
         <div className="brand">
           <div className="brand-mark">IP</div>
           <div className="brand-text">
@@ -45,7 +52,13 @@ export function Layout() {
                 {item.group}
               </div>
             ) : (
-              <NavLink key={item.to} to={item.to} end={item.exact} className={({ isActive }) => (isActive ? 'active' : '')}>
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.exact}
+                onClick={() => drawer.setOpen(false)}
+                className={({ isActive }) => (isActive ? 'active' : '')}
+              >
                 <span aria-hidden="true">{item.icon}</span>
                 {item.label}
               </NavLink>
@@ -62,10 +75,11 @@ export function Layout() {
 
       <div className="main">
         <header className="topbar no-print">
+          <DrawerToggle open={drawer.open} onToggle={drawer.toggle} />
           <div className="page-title">Investor Installment Portal</div>
           <div className="spacer" />
           <div className="who">
-            <div style={{ textAlign: 'right' }}>
+            <div className="who-text" style={{ textAlign: 'right' }}>
               <div>{admin?.name}</div>
               <div className="role">{admin?.role?.replace('_', ' ')}</div>
             </div>

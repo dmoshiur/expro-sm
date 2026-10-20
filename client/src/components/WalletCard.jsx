@@ -1,6 +1,6 @@
 /**
  * Wallet widgets shared by the investor portal and the admin profile:
- *   <WalletCard />            deep-emerald balance card
+ *   <WalletCard />            deep-sky balance card
  *   <WalletRequestModal />    deposit / withdrawal request (investor)
  *   <WalletEntryModal />      manual ledger entry (staff)
  *   <WalletRequests />        pending requests with approve / reject

@@ -39,6 +39,11 @@ import { PortalPayments } from './pages/portal/PortalPayments.jsx';
 import { PortalAccount } from './pages/portal/PortalAccount.jsx';
 import { PortalWallet } from './pages/portal/PortalWallet.jsx';
 import { PortalSupport } from './pages/portal/PortalSupport.jsx';
+import { PortalDigitalId } from './pages/portal/PortalDigitalId.jsx';
+import { PortalPaymentHub } from './pages/portal/PortalPaymentHub.jsx';
+import { PortalDonates, PortalDonateResult } from './pages/portal/PortalDonates.jsx';
+import { PortalMyTeam, PortalAccountTransfers, PortalPolicy } from './pages/portal/PortalPlaceholders.jsx';
+import { DonationsList } from './pages/admin/DonationsList.jsx';
 
 /** Investor portal subtree gets its own auth provider (separate session). */
 function PortalShell() {
@@ -79,6 +84,15 @@ export default function App() {
               <Route path="/portal/wallet" element={<PortalWallet />} />
               <Route path="/portal/support" element={<PortalSupport />} />
               <Route path="/portal/account" element={<PortalAccount />} />
+              <Route path="/portal/digital-id" element={<PortalDigitalId />} />
+              <Route path="/portal/payment" element={<PortalPaymentHub />} />
+              <Route path="/portal/donates" element={<PortalDonates />} />
+              <Route path="/portal/donates/result" element={<PortalDonateResult />} />
+              <Route path="/portal/team" element={<PortalMyTeam />} />
+              <Route path="/portal/transfers" element={<PortalAccountTransfers />} />
+              <Route path="/portal/privacy" element={<PortalPolicy kind="privacy" />} />
+              <Route path="/portal/terms" element={<PortalPolicy kind="terms" />} />
+              <Route path="/portal/nominees" element={<Navigate to="/portal/profile?tab=nominees" replace />} />
             </Route>
           </Route>
 
@@ -98,6 +112,7 @@ export default function App() {
             <Route path="/investments/new" element={<ProtectedRoute minRole="ACCOUNTANT"><InvestmentNew /></ProtectedRoute>} />
             <Route path="/investments/:id" element={<InvestmentDetail />} />
             <Route path="/installments" element={<InstallmentsList />} />
+            <Route path="/donations" element={<DonationsList />} />
             <Route path="/payments" element={<PaymentsList />} />
             <Route path="/reports/collections" element={<ReportsCollections />} />
             <Route path="/reports/due" element={<ReportsDue />} />

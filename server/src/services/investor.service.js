@@ -698,7 +698,7 @@ export async function revealNomineeNid(investorId, nomineeId, actor, req) {
 // ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
-export async function setPhoto(investorId, buffer, actor, req, { selfService = false } = {}) {
+export async function setPhoto(investorId, buffer, actor, req) {
   const file = validateUpload(buffer, { kind: 'photo' });
   const res = await query(
     `update investors set photo = ?2, photo_mime = ?3, photo_size = ?4, updated_by = ?5
@@ -711,7 +711,7 @@ export async function setPhoto(investorId, buffer, actor, req, { selfService = f
     entity: 'investor',
     entityId: investorId,
     newValue: { mime: file.mime, size: file.size },
-    meta: selfService ? { self: true, investorId } : null,
+    meta: null,
     actor,
     req,
   });
@@ -726,7 +726,7 @@ export async function getPhoto(investorId) {
   return { buffer: row.photo, mime: row.photo_mime || 'image/jpeg', size: row.photo_size };
 }
 
-export async function setNidScan(investorId, buffer, actor, req, { selfService = false } = {}) {
+export async function setNidScan(investorId, buffer, actor, req) {
   const file = validateUpload(buffer, { kind: 'scan' });
   // The ciphertext is an ASCII token; store its bytes so the BLOB column holds binary (same bytes as the bytea column did).
   const encrypted = Buffer.from(encryptScan(file.buffer, investorId), 'utf8');
@@ -741,7 +741,7 @@ export async function setNidScan(investorId, buffer, actor, req, { selfService =
     entity: 'investor',
     entityId: investorId,
     newValue: { mime: file.mime, size: file.size, encrypted: true },
-    meta: selfService ? { self: true, investorId } : null,
+    meta: null,
     actor,
     req,
   });

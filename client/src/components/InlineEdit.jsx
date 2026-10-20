@@ -15,6 +15,7 @@ export function InlineEditField({
   placeholder = '',
   hint = null,
   canEdit = false,
+  locked = false,
   onSave,
   display = null,
   maxLength = 500,
@@ -93,7 +94,12 @@ export function InlineEditField({
         ) : (
           <div className="inline-value" style={{ justifyContent: 'flex-end' }}>
             {shown ? <strong style={{ fontWeight: 600 }}>{shown}</strong> : <span className="muted">Not provided</span>}
-            {canEdit && onSave ? (
+            {locked ? (
+              <span className="locked-tag" title="Changed by the office after identity verification">
+                🔒 Office
+              </span>
+            ) : null}
+            {canEdit && onSave && !locked ? (
               <button type="button" className="inline-add" onClick={() => setEditing(true)}>
                 {shown ? 'Edit' : '+ Add'}
               </button>

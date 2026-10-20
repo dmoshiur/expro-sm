@@ -9,8 +9,8 @@ import { Router } from 'express';
 import { asyncHandler } from '../utils/async.js';
 import { requireInvestorAuth, requirePasswordChanged } from '../middleware/investor-auth.js';
 import { investorLoginLimiter, investorLoginIpLimiter, payStartLimiter } from '../middleware/security.js';
-import { photoUpload, scanUpload, ensureRawBody } from '../middleware/upload.js';
 import * as ctrl from '../controllers/investor-portal.controller.js';
+import * as donationCtrl from '../controllers/donation.controller.js';
 
 const router = Router();
 
@@ -42,10 +42,9 @@ router.get('/wallet', asyncHandler(ctrl.wallet));
 router.post('/wallet/requests', payStartLimiter, asyncHandler(ctrl.requestWalletTransaction));
 
 // Document slots (photo, NID front/back, signature) + nominee photos.
+// Read-only for investors: uploads are done by the office (see investor-portal.service IDENTITY_LOCKED_FIELDS).
 router.get('/documents', asyncHandler(ctrl.documents));
-router.post('/documents/:kind', photoUpload, scanUpload, ensureRawBody, asyncHandler(ctrl.uploadOwnDocument));
 router.get('/documents/:kind/file', asyncHandler(ctrl.ownDocumentFile));
-router.post('/nominees/:nomineeId/photo', photoUpload, ensureRawBody, asyncHandler(ctrl.uploadOwnNomineePhoto));
 router.get('/nominees/:nomineeId/photo', asyncHandler(ctrl.ownNomineePhotoFile));
 
 // Support / inquiries.
@@ -56,8 +55,13 @@ router.post('/support/tickets/:id/messages', asyncHandler(ctrl.replySupportTicke
 router.post('/support/tickets/:id/close', asyncHandler(ctrl.closeSupportTicket));
 
 router.get('/photo', asyncHandler(ctrl.getPhoto));
-router.post('/photo', photoUpload, ensureRawBody, asyncHandler(ctrl.uploadPhoto));
 router.get('/nid-scan', asyncHandler(ctrl.getNidScan));
-router.post('/nid-scan', scanUpload, ensureRawBody, asyncHandler(ctrl.uploadNidScan));
+
+// Donates: fund overview + own history, start a gateway payment, verify, receipt.
+router.get('/donations', asyncHandler(donationCtrl.overview));
+router.post('/donations', payStartLimiter, asyncHandler(donationCtrl.create));
+router.get('/donations/:id', asyncHandler(donationCtrl.detail));
+router.post('/donations/:id/verify', payStartLimiter, asyncHandler(donationCtrl.verify));
+router.get('/donations/:id/receipt', asyncHandler(donationCtrl.receipt));
 
 export default router;
