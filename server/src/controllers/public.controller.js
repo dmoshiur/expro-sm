@@ -12,6 +12,7 @@ import { summarizePaymentForPublic, getPayment } from '../services/payment.servi
 import * as audit from '../services/audit.service.js';
 import { config } from '../config/index.js';
 import { query } from '../db/client.js';
+import * as donationController from './donation.controller.js';
 
 /** GET /api/public/pay/:token */
 export async function viewLink(req, res) {
@@ -103,6 +104,7 @@ const esc = (value) =>
  * browser to the SPA result page. Idempotent: replaying the callback is a no-op.
  */
 export async function gatewayCallback(req, res) {
+  if (String(req.query.kind ?? '') === 'donation') return donationController.gatewayCallback(req, res);
   const linkToken = String(req.query.link ?? '');
   const paymentId = String(req.query.paymentID ?? req.query.paymentId ?? '').trim();
   const target = linkToken ? `/pay/${linkToken}/result` : '/pay/result';

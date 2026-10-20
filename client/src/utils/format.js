@@ -85,6 +85,7 @@ export const STATUS_LABELS = {
   ACTIVE: 'Active',
   INACTIVE: 'Inactive',
   CLOSED: 'Closed',
+  SUSPENDED: 'Suspended',
 };
 
 export function statusTone(status) {
@@ -96,6 +97,7 @@ export function statusTone(status) {
     case 'VERIFIED':
       return 'ok';
     case 'OVERDUE':
+    case 'SUSPENDED':
     case 'FAILED':
     case 'CLOSED':
     case 'REJECTED':

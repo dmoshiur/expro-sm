@@ -53,7 +53,7 @@ export function BarChart({ data = [], height = 220, valueKey = 'amount', labelKe
   );
 }
 
-const DONUT_COLORS = ['#0f7a4a', '#3f5aa6', '#e2136e', '#c98a1b', '#7c3aed', '#0e7490', '#9ca3af'];
+const DONUT_COLORS = ['#0284c7', '#3f5aa6', '#e2136e', '#c98a1b', '#7c3aed', '#0e7490', '#9ca3af'];
 
 export function Donut({ data = [], size = 180, thickness = 26 }) {
   const total = data.reduce((sum, d) => sum + Number(d.value ?? 0), 0);

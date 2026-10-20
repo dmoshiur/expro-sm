@@ -226,13 +226,18 @@ describe('wallet ledger', () => {
 });
 
 describe('documents', () => {
-  test('portal uploads land as PENDING and the owner can read them back', async () => {
+  test('investors cannot upload documents; staff uploads land as PENDING and the owner can read them', async () => {
     const { investor, portal } = await makePortalInvestor();
-    const upload = await portal.upload('/api/portal/documents/PHOTO', PIXEL_PNG, 'image/png');
+    // Investor upload routes are gone: identity documents are office-managed.
+    const refused = await portal.upload('/api/portal/documents/PHOTO', PIXEL_PNG, 'image/png');
+    assert.equal(refused.status, 404, 'portal document upload must not exist');
+
+    const upload = await superAdmin.upload(`/api/investors/${investor.id}/documents/PHOTO`, PIXEL_PNG, 'image/png');
     assert.equal(upload.status, 200, JSON.stringify(upload.body));
-    assert.equal(upload.data.document.kind, 'PHOTO');
-    assert.equal(upload.data.document.status, 'PENDING');
-    const slot = upload.data.documents.slots.find((row) => row.kind === 'PHOTO');
+
+    const slots = await portal.get('/api/portal/documents');
+    assert.equal(slots.status, 200);
+    const slot = slots.data.slots.find((row) => row.kind === 'PHOTO');
     assert.equal(slot.has_file, true);
     assert.equal(slot.status, 'PENDING');
 
@@ -403,7 +408,7 @@ describe('support tickets', () => {
 });
 
 describe('profile + printable documents', () => {
-  test('portal updates self-service fields but cannot change the legal name', async () => {
+  test('portal updates contact fields but identity fields are locked (403 FIELD_LOCKED)', async () => {
     const { portal } = await makePortalInvestor();
     const patch = await portal.patch('/api/portal/profile', {
       present_address: 'Flat 3B, Dhanmondi, Dhaka',
@@ -415,7 +420,12 @@ describe('profile + printable documents', () => {
     assert.equal(patch.data.profile.present_address, 'Flat 3B, Dhanmondi, Dhaka');
 
     const nameChange = await portal.patch('/api/portal/profile', { name: 'Hacked Name' });
-    assert.equal(nameChange.status, 400);
+    assert.equal(nameChange.status, 403);
+    assert.equal(nameChange.error.code, 'FIELD_LOCKED');
+    assert.deepEqual(nameChange.error.details.fields, ['name']);
+
+    const fatherChange = await portal.patch('/api/portal/profile', { father_name: 'Someone Else' });
+    assert.equal(fatherChange.status, 403);
   });
 
   test('statement and membership certificate are print-ready HTML', async () => {

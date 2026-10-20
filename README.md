@@ -17,7 +17,7 @@ production and nothing else to deploy (no Redis, no queue, no cron, no Docker).
 └── investor-portal/                 ← the application
     ├── package.json                 ← server + client scripts, dependency whitelist
     ├── .env.example                 ← every supported environment variable
-    ├── client/                      ← React SPA (Vite, plain CSS, no UI libraries)
+    ├── client/                      ← React SPA (Vite, plain CSS components + Tailwind utilities)
     ├── server/                      ← Express API, migrations, jobs, tests
     ├── scripts/                     ← dev runner, environment checker
     └── docs/
@@ -31,7 +31,9 @@ production and nothing else to deploy (no Redis, no queue, no cron, no Docker).
   `node:test`, global `fetch`, `node:crypto`).
 * **Turso/libSQL** (remote Turso in production; disposable local libSQL files for tests/dev).
 * Runtime dependencies: `express` and `@libsql/client`. Client libraries: `react`,
-  `react-dom`, `react-router-dom`, `vite`, `@vitejs/plugin-react`. Nothing else.
+  `react-dom`, `react-router-dom`. Build-time only (client devDependencies):
+  `vite`, `@vitejs/plugin-react`, `tailwindcss`, `postcss`, `autoprefixer`.
+  Nothing else.
 * Node's built-in SQL-free tooling is used for everything else: password
   hashing (scrypt), sessions (HMAC + httpOnly cookie), 2FA (TOTP RFC 6238),
   AES-256-GCM field encryption, validation, rate limiting, CSV/HTML rendering,
@@ -121,7 +123,7 @@ does the same checks without starting the server.
 | Seed / bootstrap | `SEED_SUPER_ADMIN_NAME`, `SEED_SUPER_ADMIN_EMAIL`, `SEED_SUPER_ADMIN_PASSWORD`, `SEED_SUPER_ADMIN_ON_START` (default `true`) | while email + password are set, every startup syncs that Super Admin (create when missing, re-hash on mismatch); remove after first login — see “Locked out…” above |
 | Misc | `TOTP_ISSUER`, `TOTP_WINDOW`, `MAX_UPLOAD_BYTES`, `MASK_LOGS` | `TOTP_ISSUER` is also the business name printed on the public pay page and receipts |
 
-Uploads: investor photos are ≤ `MAX_UPLOAD_BYTES` (default 2 MiB, JPEG/PNG) and
+Uploads (staff only; investors can no longer upload from the portal): investor photos are ≤ `MAX_UPLOAD_BYTES` (default 2 MiB, JPEG/PNG) and
 NID scans ≤ 4 MiB (JPEG/PNG/PDF). File types are decided by magic bytes, not by
 extension or `Content-Type`. Nothing uploaded is ever served from a static
 folder: bytes live in the database, the NID scan is encrypted, and reads go
@@ -148,21 +150,40 @@ investor must replace it at first sign-in.
 
 **What investors can do after signing in:**
 
-* **Overview** — live wallet balance, dues now, next installment, pension
-  progress bars (paid / total installments, %), profile completeness, alert
-  banners (overdue, month due, documents, wallet requests) and upcoming
-  installments with **Pay now** (the normal bKash pay-link flow).
-* **My profile** — the same eight tabs the office sees: **Profile · Pension
-  Enrollments · Pension Installments · Wallet · Transactions · Payments ·
-  Nominees · Change Password**. Every missing field is an inline *“+ Add”*
-  trigger (name in Bangla, father/husband, mother, DOB, religion, education,
-  present/permanent address, email, alternate mobile) instead of a dead
-  “N/A”. Profile completeness shows what is still missing.
-* **Documents** — drag & drop dropzones for photo, NID front, NID back and
-  signature, with in-browser cropping, preview, upload progress and the
-  review status (pending / verified / rejected + reviewer note). NID and
-  signature bytes are encrypted at rest and served only to the owner and
-  Super Admins; nominee photos are uploaded per nominee.
+* **Dashboard** — a gradient hero with member ID and status, the **pension
+  progress** card (installments paid out of total, % completed, amounts paid
+  and remaining, active / completed plans and an *expected maturity* forecast
+  taken from the last scheduled installment), the wallet card, due-now and
+  next-installment figures, upcoming installments with **Pay now** (the normal
+  bKash pay-link flow) and recent receipts.
+* **Digital ID** (`/portal/digital-id`) — a membership card built from the real
+  profile: photo, name (and Bangla name), member ID, member since, masked mobile
+  (`017•••••XX`) and masked NID (`•••• 1234`), with a verified / pending state
+  taken from the membership status. It prints as a single card.
+* **Navigation** — on phones, a **bottom bar** (Home · ID · Pay · Donate ·
+  Profile) and a **drawer** (☰) with the full menu: Dashboard, Digital ID,
+  Payment & wallet, Donates, Account transfers, My investments, My team,
+  Nominees, My profile, Account & password, Support, Privacy policy and Terms of
+  service. On desktop the same menu is a persistent sidebar.
+* **Payment & wallet** (`/portal/payment`) — the next payment with Pay now
+  (**Suspended** while the account is frozen), the wallet summary, and links to
+  the full installment schedule, payment history and wallet ledger.
+* **Donates** (`/portal/donates`) — give to a welfare fund (general welfare,
+  education, medical, community project), with preset amounts (৳100 to ৳5,000)
+  or a custom amount (৳10 to ৳5,00,000), paid through the same bKash gateway.
+  Every donation is recorded first, then confirmed with the gateway before it is
+  marked successful; each successful donation has a receipt (`DON-<year>-<id>`)
+  you can open, print or save as PDF. Pending donations offer *Check status*.
+* **My profile** — the same tabs the office sees (Profile · Pension Enrollments
+  · Pension Installments · Wallet · Transactions · Payments · Nominees · Change
+  Password). **Identity fields are read-only** (see below). Contact details
+  stay editable: email, alternate mobile, gender, religion, education and the
+  present / permanent address. Missing contact fields show an inline *“+ Add”*
+  trigger instead of a dead “N/A”.
+* **Documents** — photo, NID front / back, signature and nominee photos are
+  **view-only** in the portal. Staff upload and verify them. A missing document
+  shows *Not on file yet*. NID and signature bytes are encrypted at rest and
+  served only to the owner and Super Admins.
 * **Wallet** — current balance, available balance, total earned / deposited /
   withdrawn, one-click deposit and withdrawal requests with Pending /
   Approved / Rejected tracking and the office’s decision note. Pending
@@ -172,11 +193,32 @@ investor must replace it at first sign-in.
   close it when done. The same tickets appear in the staff **Support inbox**
   (`/support`), where they can be answered and moved through
   OPEN → IN_PROGRESS → RESOLVED → CLOSED.
+* **Placeholders** — My team, Account transfers, Privacy policy and Terms of
+  service are placeholder pages that say so. The policy pages carry draft text
+  until the office publishes the final wording.
 * **Printable documents** — print-ready investment statement, membership
   certificate and per-payment receipts (use the browser’s *Print → Save as
   PDF*). Every view is audited.
 * **Account & password** — change password (≥8 chars with a letter and a
   digit; never the mobile number or member code), see/revoke other sessions.
+
+**Identity lock (server-enforced).** Investors cannot change these fields.
+The API refuses the change with `403 FIELD_LOCKED` and the attempt is
+audited as `PORTAL_LOCKED_FIELD_BLOCKED`:
+name, Bangla name, mobile, date of birth, father’s and mother’s names, NID,
+status, membership status, member code, photos, signature and nominees.
+Date of birth, the Bangla name and the father’s / mother’s names are locked
+too, as the office-verified identity set. This is a product decision to
+confirm; the authoritative list is `IDENTITY_LOCKED_FIELDS` in
+`server/src/services/investor-portal.service.js`. Investors can
+still change the contact fields above, set their password, revoke other
+sessions, submit wallet requests and open support inquiries.
+
+**Design system.** The UI is light-blue (sky palette). Shared components are
+plain CSS in `client/src/styles/app.css`. Tailwind is used for utilities on new
+layouts, configured in `client/tailwind.config.js` with preflight turned off, so
+the existing base styles are unchanged. Theme colour in `client/index.html` is
+`#0284c7`.
 
 **What staff get in the admin app:**
 
@@ -191,7 +233,7 @@ investor must replace it at first sign-in.
 * **Support inbox** at `/support` lists every inquiry with filters and the
   full conversation, and links straight to the investor profile.
 
-Document storage: photo / NID / signature bytes live in the managed
+Document storage: photo / NID / signature bytes (uploaded by staff) live in the managed
 libSQL database, not in a public bucket. NID front/back, signature and nominee
 photos are AES-256-GCM ciphertext with per-investor AAD; NID and signature
 reads are Super-Admin-only and audited. Cloudinary/S3 is deliberately not wired
@@ -202,8 +244,8 @@ Security: scrypt password hashes, server-side sessions (SHA-256 token at
 rest) in a **separate table and cookie** from admins, rotation, per-account
 lockout + login rate limits, and a full audit trail
 (`INVESTOR_LOGIN_*`, `INVESTOR_PASSWORD_*`, `INVESTOR_PROFILE_UPDATED`, … in
-`docs/permissions.md`). Identity fields (name, mobile, NID, status, nominees)
-remain staff-managed; admin notes are never exposed to investors. Deactivating
+`docs/permissions.md`). Identity fields are locked for investors (see *Identity lock*
+above); admin notes are never exposed to investors. Deactivating
 an investor or disabling portal access ends their sessions immediately.
 
 ## Turso setup
@@ -253,9 +295,11 @@ and these commands (also encoded in `render.yaml`):
     `scripts/verify-build.mjs`, which fails the build with a clear error if
     `client/dist/index.html` or the hashed assets are missing (instead of
     silently deploying a 503 frontend). The build needs `vite` and
-    `@vitejs/plugin-react` — they are `devDependencies` at the repository root,
-    so the build must run with `NPM_CONFIG_PRODUCTION=false` (the default for
-    `npm ci`; do not run `npm ci --production` / `--omit=dev` before the build).
+    `@vitejs/plugin-react`, `tailwindcss`, `postcss` and `autoprefixer` — they
+    are `devDependencies` of the workspaces (the client's build tooling sits in
+    `client/package.json`), so the build must run with `NPM_CONFIG_PRODUCTION=false`
+    (the default for `npm ci`; do not run `npm ci --production` / `--omit=dev`
+    before the build).
 * **Pre-Deploy Command** (if available): `npm run migrate`
 * **Start Command:** `npm start`
 * If a pre-deploy command is unavailable, use **Start Command**:

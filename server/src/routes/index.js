@@ -14,6 +14,7 @@
  *   /api/audit             - audit log (SUPER_ADMIN)
  *   /api/support           - investor inquiries (admin inbox)
  *   /api/sms               - SMS log + test send
+ *   /api/donations         - donation ledger (staff, read-only)
  *   /api/jobs              - job status/run (SUPER_ADMIN)
  */
 import { Router } from 'express';
@@ -32,6 +33,7 @@ import auditRoutes from './audit.routes.js';
 import supportRoutes from './support.routes.js';
 import smsRoutes from './sms.routes.js';
 import jobRoutes from './job.routes.js';
+import donationRoutes from './donation.routes.js';
 
 const router = Router();
 
@@ -50,5 +52,6 @@ router.use('/audit', auditRoutes);
 router.use('/support', supportRoutes);
 router.use('/sms', smsRoutes);
 router.use('/jobs', jobRoutes);
+router.use('/donations', donationRoutes);
 
 export default router;

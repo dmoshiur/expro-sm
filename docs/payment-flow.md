@@ -161,3 +161,41 @@ Test credentials come from the bKash developer portal; the callback URL must be
 publicly reachable over HTTPS for the live/sandbox flow to come back. With
 `PAYMENT_PROVIDER=mock` (the default) the whole flow above runs against an
 in-process fake, which is how the automated tests cover it.
+
+## 7. Donations (welfare funds)
+
+Donations use the same gateway, but they have their own table (`donations`,
+migration `004_donations.sql`). They never change installments, investments or
+the investor's wallet.
+
+**States:** `INITIATED → PENDING → SUCCESS | FAILED | CANCELLED`. `SUCCESS`,
+`FAILED` and `CANCELLED` are terminal. A settled donation is never flipped to
+another state by a later verify or reconcile run.
+
+1. **Start** — `POST /api/portal/donations { fundCode, amount }`. The server
+   checks the fund and amount (৳10 to ৳5,00,000, stored as integer poisha),
+   refuses frozen accounts, and creates the row as `INITIATED`. It then creates
+   the gateway payment with the invoice number set to the receipt number
+   (`DON-<year>-<id padded to 6>`, Dhaka calendar year). The row becomes
+   `PENDING` with `gateway_payment_id`, and the browser is sent to the gateway
+   redirect URL. A double-click within 60 seconds reuses the open attempt.
+2. **Callback** — the gateway returns to `/pay/callback?kind=donation&paymentID=…`.
+   The browser's query values are ignored. The server executes the payment with
+   the gateway, then checks that:
+   * the amount equals the donation amount,
+   * the invoice equals the receipt number,
+   * the transaction id is not already used in `payments` or `donations`.
+
+   It then writes `SUCCESS` and the `DONATION_PAID` audit row in one transaction,
+   holding a row lock. A mismatch ends in `FAILED` with the reason recorded.
+3. **Transient errors** — if the gateway is unreachable during the callback, the
+   row stays `PENDING`. The investor can press *Check status*
+   (`POST /api/portal/donations/:id/verify`), and the reconcile job re-queries
+   stuck rows. Both use the gateway's `queryPayment`, never the browser's claim.
+4. **Receipts** — `GET /api/portal/donations/:id/receipt` renders the receipt
+   on demand from the stored row: receipt number, fund, amount, transaction id,
+   paid time, investor name and member code. Only `SUCCESS` donations have a
+   receipt. Each view is audited as `DONATION_RECEIPT_VIEWED`.
+
+Staff see donations read-only at `/donations` (`GET /api/donations`). The list
+shows investor name and member code, never a mobile number.

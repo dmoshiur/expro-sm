@@ -15,7 +15,7 @@ import { memberCodeForId } from './investor-auth.service.js';
 const esc = (value) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-const BRAND = '#047857';
+const BRAND = '#0284c7';
 const BRAND_DARK = '#064e3b';
 
 export async function getCertificateData(investorId) {

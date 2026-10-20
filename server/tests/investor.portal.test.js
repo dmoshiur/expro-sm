@@ -362,7 +362,7 @@ describe('portal data (own records only)', () => {
     assert.match(String(statement.text), /Kind,Reference/);
   });
 
-  test('profile self-update: allowed fields save, identity fields cannot change', async () => {
+  test('profile self-update: contact fields save, identity fields are locked and every attempt is audited', async () => {
     const { investor } = await makeInvestor({ createInvestment: false });
     await superAdmin.post(`/api/investors/${investor.id}/portal-access/password`, { password: TEMP_PASSWORD });
     const client = await loginReady(investor.mobile, TEMP_PASSWORD);
@@ -370,35 +370,51 @@ describe('portal data (own records only)', () => {
     const before = await client.get('/api/portal/profile');
     const updated = await client.patch('/api/portal/profile', {
       email: 'investor2@test.local',
-      father_name: 'Father Example',
-      date_of_birth: '1992-07-21',
       present_address: 'House 1, Bogura',
-      name: 'Changed Name Attempt',
-      mobile: '01799999999',
     });
     assert.equal(updated.status, 200, JSON.stringify(updated.body));
     assert.equal(updated.data.profile.email, 'investor2@test.local');
-    assert.equal(updated.data.profile.father_name, 'Father Example');
-    assert.equal(updated.data.profile.name, investor.name, 'name must not be self-editable');
-    assert.equal(updated.data.profile.mobile, investor.mobile, 'mobile must not be self-editable');
+    assert.equal(updated.data.profile.present_address, 'House 1, Bogura');
     assert.ok(updated.data.completion.percent > before.data.completion.percent);
+    assert.ok(updated.data.policy.locked_fields.includes('father_name'));
+    assert.ok(updated.data.policy.editable_fields.includes('email'));
+
+    // Identity data is office-managed: each attempt is refused and changes nothing.
+    const attempts = [
+      { name: 'Changed Name Attempt' },
+      { mobile: '01799999999' },
+      { father_name: 'Father Example' },
+      { date_of_birth: '1992-07-21' },
+    ];
+    for (const body of attempts) {
+      const refused = await client.patch('/api/portal/profile', body);
+      assert.equal(refused.status, 403, JSON.stringify(body));
+      assert.equal(refused.error.code, 'FIELD_LOCKED');
+    }
+    const after = await client.get('/api/portal/profile');
+    assert.equal(after.data.profile.name, investor.name, 'name must not be self-editable');
+    assert.equal(after.data.profile.mobile, investor.mobile, 'mobile must not be self-editable');
+    assert.equal(after.data.profile.father_name, before.data.profile.father_name);
+    assert.equal(after.data.profile.date_of_birth, before.data.profile.date_of_birth);
 
     // Admin notes / credential internals never leak into the profile DTO.
     assert.equal('notes' in updated.data.profile, false);
     assert.equal('password_hash' in updated.data.profile, false);
     assert.equal('failed_login_count' in updated.data.profile, false);
 
-    const futureDob = await client.patch('/api/portal/profile', { date_of_birth: '2999-01-01' });
-    assert.equal(futureDob.status, 422);
-
     const auditRows = await ctx.query(
+      `select count(*) as count from audit_logs where action = 'PORTAL_LOCKED_FIELD_BLOCKED' and entity_id = ?1`,
+      [String(investor.id)],
+    );
+    assert.equal(auditRows.rows[0].count, attempts.length);
+    const updateRows = await ctx.query(
       `select count(*) as count from audit_logs where action = 'INVESTOR_PROFILE_UPDATED' and entity_id = ?1`,
       [String(investor.id)],
     );
-    assert.ok(auditRows.rows[0].count >= 1);
+    assert.ok(updateRows.rows[0].count >= 1);
   });
 
-  test('documents: investor uploads own photo and NID scan and reads them back', async () => {
+  test('documents: investor cannot upload; staff-set photo and NID scan are readable by the owner', async () => {
     const { investor } = await makeInvestor({ createInvestment: false });
     await superAdmin.post(`/api/investors/${investor.id}/portal-access/password`, { password: TEMP_PASSWORD });
     const client = await loginReady(investor.mobile, TEMP_PASSWORD);
@@ -407,20 +423,26 @@ describe('portal data (own records only)', () => {
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
       'base64',
     );
-    const uploaded = await client.upload('/api/portal/photo', png, 'image/png');
-    assert.equal(uploaded.status, 200, JSON.stringify(uploaded.body));
+    const refusedPhoto = await client.upload('/api/portal/photo', png, 'image/png');
+    assert.equal(refusedPhoto.status, 404, 'investor photo upload must not exist');
+    const refusedScan = await client.upload('/api/portal/nid-scan', png, 'image/png');
+    assert.equal(refusedScan.status, 404, 'investor NID upload must not exist');
+
+    const staffPhoto = await superAdmin.upload(`/api/investors/${investor.id}/photo`, png, 'image/png');
+    assert.equal(staffPhoto.status, 200, JSON.stringify(staffPhoto.body));
     const photo = await client.get('/api/portal/photo');
     assert.equal(photo.status, 200);
     assert.match(photo.headers.get('content-type'), /image\/png/);
 
-    const scan = await client.upload('/api/portal/nid-scan', png, 'image/png');
-    assert.equal(scan.status, 200);
+    const staffScan = await superAdmin.upload(`/api/investors/${investor.id}/nid-scan`, png, 'image/png');
+    assert.equal(staffScan.status, 200, JSON.stringify(staffScan.body));
     const scanBack = await client.get('/api/portal/nid-scan');
     assert.equal(scanBack.status, 200);
 
     const profile = await client.get('/api/portal/profile');
     assert.equal(profile.data.profile.has_photo, true);
     assert.equal(profile.data.profile.has_nid_scan, true);
+    assert.equal(profile.data.policy.documents, 'office-managed');
   });
 
   test('logout revokes the session', async () => {

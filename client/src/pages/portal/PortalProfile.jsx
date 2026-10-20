@@ -83,18 +83,6 @@ export function PortalProfile() {
     refreshAll();
   };
 
-  const uploadDocument = async (kind, file) => {
-    await portalApi.uploadDocument(kind, file);
-    toast.success('Document uploaded - the office will verify it');
-    refreshAll();
-  };
-
-  const uploadNomineePhoto = async (nomineeId, file) => {
-    await portalApi.uploadNomineePhoto(nomineeId, file);
-    toast.success('Nominee photo uploaded');
-    refreshAll();
-  };
-
   const requestWallet = async (payload) => {
     await portalApi.requestWallet(payload);
     toast.success(payload.type === 'WITHDRAWAL' ? 'Withdrawal request sent' : 'Deposit request sent');
@@ -175,13 +163,13 @@ export function PortalProfile() {
           <>
             <div className="grid cols-2">
               <Card title="Personal information">
-                <p className="section-note">Tap any missing field to add it. No more “N/A”.</p>
-                <InlineEditField label="Name (Bangla)" field="name_bangla" value={profile.name_bangla} canEdit onSave={saveField} placeholder="যেমন: রহিম উদ্দিন" maxLength={120} />
-                <InlineEditField label="Full name" field="name" value={profile.name} canEdit={false} />
-                <InlineEditField label="Mobile (login)" field="mobile" value={profile.mobile} canEdit={false} />
-                <InlineEditField label="Father / husband" field="father_name" value={profile.father_name} canEdit onSave={saveField} maxLength={120} />
-                <InlineEditField label="Mother's name" field="mother_name" value={profile.mother_name} canEdit onSave={saveField} maxLength={120} />
-                <InlineEditField label="Date of birth" field="date_of_birth" value={profile.date_of_birth} type="date" canEdit onSave={saveField} display={profile.date_of_birth ? formatDate(profile.date_of_birth) : null} />
+                <p className="section-note">Identity details are verified by the office and locked here. Contact details are yours to update.</p>
+                <InlineEditField label="Name (Bangla)" field="name_bangla" value={profile.name_bangla} locked maxLength={120} />
+                <InlineEditField label="Full name" field="name" value={profile.name} locked />
+                <InlineEditField label="Mobile (login)" field="mobile" value={profile.mobile} locked />
+                <InlineEditField label="Father / husband" field="father_name" value={profile.father_name} locked maxLength={120} />
+                <InlineEditField label="Mother's name" field="mother_name" value={profile.mother_name} locked maxLength={120} />
+                <InlineEditField label="Date of birth" field="date_of_birth" value={profile.date_of_birth} type="date" locked display={profile.date_of_birth ? formatDate(profile.date_of_birth) : null} />
                 <InlineEditField label="Gender" field="gender" value={profile.gender ?? ''} options={GENDER_OPTIONS} canEdit onSave={(field, value) => saveField(field, value)} display={profile.gender ? profile.gender[0] + profile.gender.slice(1).toLowerCase() : null} />
                 <InlineEditField label="Religion" field="religion" value={profile.religion} canEdit onSave={saveField} maxLength={60} />
                 <InlineEditField label="Education" field="education" value={profile.education} canEdit onSave={saveField} maxLength={120} />
@@ -194,8 +182,8 @@ export function PortalProfile() {
                   <strong className="mono">{profile.nid_last4 ? `••••••••${profile.nid_last4}` : 'Not on file'}</strong>
                 </div>
                 <p className="small muted" style={{ marginTop: 8 }}>
-                  Name, mobile and NID are changed by the office to protect your account. Everything else is yours to
-                  complete.
+                  Name, mobile, NID, nominees and photos are changed by the office to protect your account. To correct
+                  one, <Link to="/portal/support">open a support inquiry</Link>.
                 </p>
               </Card>
 
@@ -235,14 +223,14 @@ export function PortalProfile() {
               actions={<span className="small muted">{documents?.pending_review ? `${documents.pending_review} awaiting verification` : 'All reviewed'}</span>}
             >
               <p className="section-note">
-                Drag & drop or click to upload. Photos and signatures are cropped in your browser before upload; NID files
-                are stored encrypted and only the office can open them.
+                Your documents are verified and stored by the office. They are view-only here. NID scans are encrypted and
+                only the office can open them.
               </p>
               <div className="doc-grid">
-                <DocumentSlot kind="PHOTO" label="Photo" slot={slotsByKind.PHOTO} url={portalApi.documentUrl('PHOTO')} upload={(file) => uploadDocument('PHOTO', file)} canUpload onChanged={refreshAll} hint="JPEG or PNG, max 2 MB" />
-                <DocumentSlot kind="NID_FRONT" label="NID front" slot={slotsByKind.NID_FRONT} url={portalApi.documentUrl('NID_FRONT')} upload={(file) => uploadDocument('NID_FRONT', file)} canUpload onChanged={refreshAll} hint="Encrypted · JPEG/PNG/PDF" />
-                <DocumentSlot kind="NID_BACK" label="NID back" slot={slotsByKind.NID_BACK} url={portalApi.documentUrl('NID_BACK')} upload={(file) => uploadDocument('NID_BACK', file)} canUpload onChanged={refreshAll} hint="Encrypted · JPEG/PNG/PDF" />
-                <DocumentSlot kind="SIGNATURE" label="Signature" slot={slotsByKind.SIGNATURE} url={portalApi.documentUrl('SIGNATURE')} upload={(file) => uploadDocument('SIGNATURE', file)} canUpload onChanged={refreshAll} hint="JPEG or PNG" />
+                <DocumentSlot kind="PHOTO" label="Photo" slot={slotsByKind.PHOTO} url={portalApi.documentUrl('PHOTO')} />
+                <DocumentSlot kind="NID_FRONT" label="NID front" slot={slotsByKind.NID_FRONT} url={portalApi.documentUrl('NID_FRONT')} />
+                <DocumentSlot kind="NID_BACK" label="NID back" slot={slotsByKind.NID_BACK} url={portalApi.documentUrl('NID_BACK')} />
+                <DocumentSlot kind="SIGNATURE" label="Signature" slot={slotsByKind.SIGNATURE} url={portalApi.documentUrl('SIGNATURE')} />
               </div>
             </Card>
           </>
@@ -456,9 +444,6 @@ export function PortalProfile() {
                         nomineeId={nominee.id}
                         slot={photo ?? { has_file: false, status: 'MISSING' }}
                         url={portalApi.nomineePhotoUrl(nominee.id)}
-                        upload={(file) => uploadNomineePhoto(nominee.id, file)}
-                        canUpload
-                        onChanged={refreshAll}
                       />
                       <div className="card" style={{ margin: 0 }}>
                         <div className="inline">
@@ -479,8 +464,8 @@ export function PortalProfile() {
               </div>
             )}
             <p className="small muted" style={{ marginTop: 12 }}>
-              You can upload a photo for each nominee. Name, relation, NID and share changes are made by the office after
-              identity verification - <Link to="/portal/support">open an inquiry</Link> to request a change.
+              Nominee details and photos are maintained by the office after identity verification -{' '}
+              <Link to="/portal/support">open an inquiry</Link> to request a change.
             </p>
           </Card>
         ) : null}

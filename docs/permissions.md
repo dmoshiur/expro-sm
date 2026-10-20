@@ -117,20 +117,35 @@ password revokes live sessions immediately.
 | `POST /api/portal/auth/change-password` | ≥8 chars, letter + digit, never the mobile / member code / own name. Revokes other sessions. |
 | `POST /api/portal/auth/sessions/revoke-others` | Keeps the current session. |
 | `GET /api/portal/dashboard` | Own totals: invested / paid / remaining / due now / overdue, next due, profile completeness. |
-| `GET /api/portal/profile`, `PATCH /api/portal/profile` | Self-service fields only (email, DOB, addresses, …). Name, mobile, NID, status stay staff-managed; admin `notes` are never exposed. |
+| `GET /api/portal/profile`, `PATCH /api/portal/profile` | Contact fields only: email, alternate mobile, gender, religion, education, present / permanent address. **Identity fields are locked** and answered with `403 FIELD_LOCKED` (`details.fields`), audited as `PORTAL_LOCKED_FIELD_BLOCKED`: name, name_bangla, mobile, date_of_birth, father_name, mother_name, nid, status, membership_status, member_code. Admin `notes` are never returned. |
 | `GET /api/portal/investments`, `…/installments`, `…/payments` | Scoped by session investor id - there is no `:id` in portal URLs. |
 | `POST /api/portal/installments/:id/pay-link` | Own open installment only (others → 404); reuses the public bKash pay flow. |
-| `GET/POST /api/portal/photo`, `GET/POST /api/portal/nid-scan` | Own documents; same magic-byte validation + encryption; reads audited. |
+| `GET /api/portal/photo`, `GET /api/portal/nid-scan` | Own photo / encrypted NID scan (owner read, audited). **No upload route exists for investors.** |
 | `GET /api/portal/wallet` | Own summary + ledger only. |
 | `POST /api/portal/wallet/requests` | Deposit / withdrawal **requests** (PENDING); never writes a completed balance. |
-| `GET /api/portal/documents` | Own slot states (photo, NID front/back, signature, nominee photos). |
-| `POST /api/portal/documents/:kind` | Own upload; always resets the slot to PENDING and is audited. |
+| `GET /api/portal/documents` | Own slot states (photo, NID front/back, signature, nominee photos). Read-only. |
+| `POST /api/portal/documents/:kind` | **Removed.** Investors cannot upload documents; staff upload from the admin profile (`ACCOUNTANT` for photo and nominee photos only; `SUPER_ADMIN` for NID and signature). |
 | `GET /api/portal/documents/:kind/file`, `GET /api/portal/nominees/:id/photo` | Own bytes only; NID / signature reads audited. |
-| `POST /api/portal/nominees/:nomineeId/photo` | Own nominee photo upload. |
+| `POST /api/portal/nominees/:nomineeId/photo` | **Removed.** Nominee photos are maintained by staff. |
 | `GET/POST /api/portal/support/tickets`, `…/:id/messages`, `…/:id/close` | Own tickets only; investors cannot address another investor's ticket. |
 | `GET /api/portal/statement.html`, `GET /api/portal/certificate` | Own print-ready statement / membership certificate. |
 | `GET /api/portal/payments/:id/receipt` | Own successful payments only (others → 404). |
 | `GET /api/portal/statement.csv` | Own statement; audited as a report export. |
+| `GET /api/portal/donations` | Fund list, presets, own totals and the 20 most recent donations. |
+| `POST /api/portal/donations` | Starts a donation: `{ fundCode, amount }` (৳10 to ৳5,00,000). Creates the row, then the gateway payment. Rate-limited like pay-link. Frozen accounts are refused (the session is revoked). |
+| `GET /api/portal/donations/:id` | Own donation only (others → 404). Never includes raw gateway payloads. |
+| `POST /api/portal/donations/:id/verify` | Re-queries the gateway for an open donation. The browser's claim is never trusted. A settled donation is never reverted. |
+| `GET /api/portal/donations/:id/receipt` | Own successful donation only (others → 404; not successful → 400). Audited as `DONATION_RECEIPT_VIEWED`. |
+| `GET /pay/callback?kind=donation` (public redirect) | Shared gateway callback. Looks up the payment id, re-checks with the gateway, then settles. Browser query values are ignored. |
+
+### Donations (staff, read-only)
+
+| Endpoint | SUPER_ADMIN | ACCOUNTANT | VIEWER |
+| --- | --- | --- | --- |
+| `GET /api/donations` (filters: status, fund, search, paging) | ✅ | ✅ | ✅ |
+
+The staff list shows the investor's name and member code and **never a mobile
+number**. Staff cannot create, edit, cancel or refund donations from the admin app.
 
 ### Investments & installments
 

@@ -7,12 +7,13 @@
  */
 import { Validator, LIMITS } from '../utils/validate.js';
 import { ok, created, binary, html, csv } from '../utils/http.js';
-import { badRequest, notFound } from '../utils/errors.js';
+import { AppError, badRequest, notFound } from '../utils/errors.js';
 import { config } from '../config/index.js';
 import { INVESTOR_PASSWORD_MIN_LENGTH } from '../services/crypto.service.js';
 import * as investorAuth from '../services/investor-auth.service.js';
 import * as portalService from '../services/investor-portal.service.js';
 import * as investorService from '../services/investor.service.js';
+import { IDENTITY_LOCKED_FIELDS } from '../services/investor-portal.service.js';
 import * as receiptService from '../services/receipt.service.js';
 import * as reportService from '../services/report.service.js';
 import * as walletService from '../services/wallet.service.js';
@@ -123,7 +124,28 @@ export async function profile(req, res) {
   return ok(res, { ...data, documents, alerts, wallet });
 }
 
+/**
+ * PATCH /api/portal/profile - contact and personal details only. Any identity
+ * field (name, mobile, date of birth, parents' names, NID, status) is refused
+ * with 403 FIELD_LOCKED and the attempt is audited.
+ */
 export async function updateProfile(req, res) {
+  const attempted = IDENTITY_LOCKED_FIELDS.filter((field) => req.body?.[field] !== undefined);
+  if (attempted.length) {
+    await audit.record({
+      action: audit.AUDIT_ACTIONS.PORTAL_LOCKED_FIELD_BLOCKED,
+      entity: 'investor',
+      entityId: req.investor.id,
+      meta: { self: true, investorId: req.investor.id, fields: attempted },
+      req,
+    });
+    throw new AppError(
+      403,
+      'FIELD_LOCKED',
+      'These details are set by the office and cannot be changed in the portal. Open a support inquiry to request a change.',
+      { fields: attempted },
+    );
+  }
   const v = new Validator(req.body);
   applyProfileValidators(v);
   const changes = v.result();
@@ -178,21 +200,10 @@ export async function requestWalletTransaction(req, res) {
 }
 
 // ---------------------------------------------------------------------------
-// Documents: own photo / NID / signature slots + nominee photos
+// Documents (read-only for investors): own photo / NID / signature slots + nominee photos
 // ---------------------------------------------------------------------------
 export async function documents(req, res) {
   return ok(res, await documentService.listDocuments(req.investor.id));
-}
-
-/** POST /api/portal/documents/:kind (raw image/pdf body) */
-export async function uploadOwnDocument(req, res) {
-  const kind = String(req.params.kind ?? '').toUpperCase();
-  if (!documentService.DOCUMENT_KINDS.includes(kind)) throw badRequest('Unknown document kind');
-  const document = await documentService.uploadDocument(req.investor.id, kind, req.body, {
-    req,
-    selfService: true,
-  });
-  return ok(res, { document, documents: await documentService.listDocuments(req.investor.id) });
 }
 
 /** GET /api/portal/documents/:kind/file */
@@ -201,16 +212,6 @@ export async function ownDocumentFile(req, res) {
   if (!documentService.DOCUMENT_KINDS.includes(kind)) throw badRequest('Unknown document kind');
   const file = await documentService.getDocumentFile(req.investor.id, kind, { req, selfService: true });
   return binary(res, file.buffer, { mime: file.mime, cache: 'private, max-age=60' });
-}
-
-/** POST /api/portal/nominees/:nomineeId/photo */
-export async function uploadOwnNomineePhoto(req, res) {
-  const document = await documentService.uploadDocument(req.investor.id, 'NOMINEE_PHOTO', req.body, {
-    req,
-    selfService: true,
-    nomineeId: Number(req.params.nomineeId),
-  });
-  return ok(res, { document, documents: await documentService.listDocuments(req.investor.id) });
 }
 
 /** GET /api/portal/nominees/:nomineeId/photo */
@@ -296,26 +297,16 @@ export async function statementHtml(req, res) {
 }
 
 // ---------------------------------------------------------------------------
-// Documents (own photo / NID scan)
+// Documents (own photo / NID scan, read-only)
 // ---------------------------------------------------------------------------
 export async function getPhoto(req, res) {
   const file = await investorService.getPhoto(req.investor.id);
   return binary(res, file.buffer, { mime: file.mime, cache: 'private, max-age=300' });
 }
 
-export async function uploadPhoto(req, res) {
-  const result = await investorService.setPhoto(req.investor.id, req.body, null, req, { selfService: true });
-  return ok(res, result);
-}
-
 export async function getNidScan(req, res) {
   const file = await investorService.getNidScan(req.investor.id, null, req, { selfService: true });
   return binary(res, file.buffer, { mime: file.mime });
-}
-
-export async function uploadNidScan(req, res) {
-  const result = await investorService.setNidScan(req.investor.id, req.body, null, req, { selfService: true });
-  return ok(res, result);
 }
 
 // ---------------------------------------------------------------------------

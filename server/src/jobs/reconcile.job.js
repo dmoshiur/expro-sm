@@ -1,13 +1,14 @@
 /**
  * Reconciliation (every RECONCILE_STUCK_AFTER_MINUTES, default 15 min):
- * re-queries the gateway for payments stuck in INITIATED/PENDING so a lost
- * callback still results in the installment being marked PAID, and abandoned
- * attempts are moved to CANCELLED instead of lingering forever.
+ * re-queries the gateway for payments and donations stuck in INITIATED/PENDING
+ * so a lost callback still results in the installment (or donation) being
+ * marked PAID, and abandoned installment attempts are moved to CANCELLED.
  */
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 import { findStuckPayments, refreshPaymentStatus, expireAbandonedPayments } from '../services/payment.service.js';
 import { getGateway } from '../services/gateways/index.js';
+import { reconcileStuckDonations } from '../services/donation.service.js';
 
 export async function runReconcileJob({ limit = 25, applyAbandonment = true } = {}) {
   const gateway = getGateway();
@@ -32,8 +33,10 @@ export async function runReconcileJob({ limit = 25, applyAbandonment = true } = 
     summary.abandonedCancelled = abandoned.length;
   }
 
+  const donations = await reconcileStuckDonations({ olderThanMinutes: config.payments.reconcileStuckAfterMinutes, limit });
+
   return {
-    itemsProcessed: summary.checked + summary.abandonedCancelled,
-    detail: { gateway: gateway.name, thresholdMinutes: config.payments.reconcileStuckAfterMinutes, ...summary },
+    itemsProcessed: summary.checked + summary.abandonedCancelled + donations.checked,
+    detail: { gateway: gateway.name, thresholdMinutes: config.payments.reconcileStuckAfterMinutes, ...summary, donations },
   };
 }

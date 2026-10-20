@@ -1,21 +1,17 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { Link, Outlet, useNavigate } from 'react-router-dom';
 import { useInvestorAuth } from '../../context/InvestorAuthContext.jsx';
 import { Alert } from '../../components/ui.jsx';
+import { DrawerBackdrop, DrawerToggle, useDrawer } from '../../components/Drawer.jsx';
+import { PortalBottomNav, PortalDrawerNav } from '../../components/PortalNav.jsx';
 
-const NAV = [
-  { to: '/portal', label: 'Overview', icon: '▤', exact: true },
-  { to: '/portal/profile', label: 'My profile', icon: '☰' },
-  { to: '/portal/investments', label: 'Investments', icon: '▦' },
-  { to: '/portal/installments', label: 'Installments', icon: '≡' },
-  { to: '/portal/payments', label: 'Payments', icon: '৳' },
-  { to: '/portal/wallet', label: 'Wallet', icon: '◈' },
-  { to: '/portal/support', label: 'Support', icon: '✉' },
-  { to: '/portal/account', label: 'Account & password', icon: '⚙' },
-];
-
+/**
+ * Investor shell. Phones: top bar + drawer + fixed bottom nav. Desktop: the
+ * drawer content is shown as a persistent sidebar.
+ */
 export function PortalLayout() {
   const { investor, logout, mustChangePassword } = useInvestorAuth();
   const navigate = useNavigate();
+  const drawer = useDrawer();
 
   const onLogout = async () => {
     await logout();
@@ -30,7 +26,11 @@ export function PortalLayout() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <DrawerBackdrop open={drawer.open} onClose={() => drawer.setOpen(false)} />
+      <aside className={`sidebar ${drawer.open ? 'open' : ''}`} id="app-drawer" aria-label="Main menu">
+        <button type="button" className="drawer-close" aria-label="Close menu" onClick={() => drawer.setOpen(false)}>
+          ✕
+        </button>
         <div className="brand">
           <div className="brand-mark">IP</div>
           <div className="brand-text">
@@ -38,26 +38,30 @@ export function PortalLayout() {
             <small>My account</small>
           </div>
         </div>
-        <nav>
-          {NAV.map((item) => (
-            <NavLink key={item.to} to={item.to} end={item.exact} className={({ isActive }) => (isActive ? 'active' : '')}>
-              <span aria-hidden="true">{item.icon}</span>
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="sidebar-footer">{investor?.member_code}</div>
+        <div className="drawer-profile">
+          <span className="avatar" aria-hidden="true">{initials || '?'}</span>
+          <div style={{ minWidth: 0 }}>
+            <strong>{investor?.name ?? 'Investor'}</strong>
+            <small>{investor?.status ? String(investor.status).toLowerCase() : 'member'}</small>
+            <div>
+              <span className="member-id">{investor?.member_code ?? '—'}</span>
+            </div>
+          </div>
+        </div>
+        <PortalDrawerNav onNavigate={() => drawer.setOpen(false)} />
+        <div className="sidebar-footer">Member ID {investor?.member_code}</div>
       </aside>
 
       <div className="main">
         <header className="topbar no-print">
+          <DrawerToggle open={drawer.open} onToggle={drawer.toggle} />
           <div className="page-title">My account</div>
           <div className="spacer" />
           <div className="who">
             <div className="avatar" aria-hidden="true">
               {initials || '?'}
             </div>
-            <div style={{ textAlign: 'right' }}>
+            <div className="who-text" style={{ textAlign: 'right' }}>
               <div>{investor?.name}</div>
               <div className="role">{investor?.member_code}</div>
             </div>
@@ -66,16 +70,18 @@ export function PortalLayout() {
             </button>
           </div>
         </header>
-        <main className="content">
+        <main className="content portal-content">
           {mustChangePassword ? (
             <Alert tone="warn">
-              You are using a temporary password given by the office. Please set your own password below before using
-              the portal.
+              You are using a temporary password given by the office. Please set your own password on the{' '}
+              <Link to="/portal/account">Account &amp; password</Link> page before using the portal.
             </Alert>
           ) : null}
           <Outlet />
         </main>
       </div>
+
+      <PortalBottomNav />
     </div>
   );
 }

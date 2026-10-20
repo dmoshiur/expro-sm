@@ -112,9 +112,10 @@ async function upsertUploadedDocument(client, { investorId, kind, nomineeId = nu
 
 /**
  * Upload / replace one document slot.
- * @param {object} options { actor, req, nomineeId = null, selfService = false }
+ * Staff-only: investors cannot upload documents (identity is office-managed).
+ * @param {object} options { actor, req, nomineeId = null }
  */
-export async function uploadDocument(investorId, kind, buffer, { actor = null, req = null, nomineeId = null, selfService = false } = {}) {
+export async function uploadDocument(investorId, kind, buffer, { actor = null, req = null, nomineeId = null } = {}) {
   assertKind(kind);
   const nomineeDoc = kind === 'NOMINEE_PHOTO';
   if (nomineeDoc && !nomineeId) throw badRequest('Nominee id is required for a nominee photo');
@@ -156,7 +157,7 @@ export async function uploadDocument(investorId, kind, buffer, { actor = null, r
       mime: file.mime,
       size: file.size,
       data: storedData,
-      uploadedBy: selfService ? 'INVESTOR' : 'ADMIN',
+      uploadedBy: 'ADMIN',
     });
 
     await audit.record(
@@ -165,7 +166,7 @@ export async function uploadDocument(investorId, kind, buffer, { actor = null, r
         entity: 'investor_document',
         entityId: documentId,
         newValue: { kind, mime: file.mime, size: file.size, encrypted: kind !== 'PHOTO' },
-        meta: { investorId, nomineeId, self: Boolean(selfService) },
+        meta: { investorId, nomineeId },
         actor,
         req,
       },
