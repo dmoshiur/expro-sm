@@ -14,7 +14,7 @@ const CSP_DIRECTIVES = [
   "default-src 'self'",
   "base-uri 'self'",
   "object-src 'none'",
-  "frame-ancestors 'none'",
+  config.allowEmbedding ? "frame-ancestors *" : "frame-ancestors 'none'",
   "form-action 'self'",
   "img-src 'self' data:",
   "font-src 'self' data:",
@@ -27,7 +27,7 @@ const CSP_DIRECTIVES = [
 export function securityHeaders(req, res, next) {
   res.setHeader('Content-Security-Policy', CSP_DIRECTIVES.join('; '));
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
+  if (!config.allowEmbedding) res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=()');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');

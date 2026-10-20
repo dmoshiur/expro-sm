@@ -106,7 +106,10 @@ export function InvestorsList() {
                       <Link to={`/investors/${row.id}`} style={{ fontWeight: 600 }}>
                         {row.name}
                       </Link>
-                      <div className="small muted mono">{row.member_code}</div>
+                      <div className="small muted mono">
+                        {row.member_code}
+                        {row.name_bangla ? ` · ${row.name_bangla}` : ''}
+                      </div>
                     </>
                   ),
                 },
@@ -115,7 +118,27 @@ export function InvestorsList() {
                   header: <span role="button" onClick={() => onSort('mobile')}>Mobile</span>,
                   render: (row) => <span className="mono">{row.mobile}</span>,
                 },
-                { key: 'status', header: 'Status', render: (row) => <Badge status={row.status} /> },
+                {
+                  key: 'status',
+                  header: 'Status',
+                  render: (row) => (
+                    <>
+                      <Badge status={row.status} />
+                      {row.frozen_at ? <span className="badge danger" style={{ marginLeft: 4 }}>Frozen</span> : null}
+                    </>
+                  ),
+                },
+                {
+                  key: 'membership_status',
+                  header: 'Membership',
+                  render: (row) => (
+                    <span
+                      className={`badge ${row.membership_status === 'APPROVED' ? 'ok' : row.membership_status === 'REJECTED' ? 'danger' : 'warn'}`}
+                    >
+                      {(row.membership_status ?? 'PENDING').toLowerCase()}
+                    </span>
+                  ),
+                },
                 {
                   key: 'portal_enabled',
                   header: 'Portal login',

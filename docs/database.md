@@ -41,9 +41,11 @@ Production logs still use normalized errors, not upstream messages.
 CLI migration and server startup import the same `client.js`, use the same
 configuration names, and never open a separate schema client. The application
 transaction mechanism and its deferred installment/nominee checks are unchanged.
-The sole migration, `001_turso_initial_schema.sql`, has not been edited (avoids
-checksum drift); its complete tables, indexes, triggers and helper tables execute
-successfully on a fresh libSQL database.
+Migrations are additive and never edited once applied (checksum guard):
+`001_turso_initial_schema.sql`, `002_investor_portal_login.sql` and
+`003_investor_experience.sql` (wallet ledger, investor documents, support
+tickets, membership + freeze). All three execute successfully on a fresh libSQL
+database, and `npm test` covers the migration startup check.
 
 Metadata contract: `filename TEXT PRIMARY KEY`, `checksum TEXT NOT NULL`,
 `applied_at TEXT NOT NULL DEFAULT (strftime(...))`,

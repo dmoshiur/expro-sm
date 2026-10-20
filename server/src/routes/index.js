@@ -12,6 +12,7 @@
  *   /api/dashboard         - KPIs
  *   /api/reports           - reports + CSV exports
  *   /api/audit             - audit log (SUPER_ADMIN)
+ *   /api/support           - investor inquiries (admin inbox)
  *   /api/sms               - SMS log + test send
  *   /api/jobs              - job status/run (SUPER_ADMIN)
  */
@@ -28,6 +29,7 @@ import investorPortalRoutes from './investor-portal.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import reportRoutes from './report.routes.js';
 import auditRoutes from './audit.routes.js';
+import supportRoutes from './support.routes.js';
 import smsRoutes from './sms.routes.js';
 import jobRoutes from './job.routes.js';
 
@@ -45,6 +47,7 @@ router.use('/portal', investorPortalRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/reports', reportRoutes);
 router.use('/audit', auditRoutes);
+router.use('/support', supportRoutes);
 router.use('/sms', smsRoutes);
 router.use('/jobs', jobRoutes);
 

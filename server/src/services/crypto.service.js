@@ -230,7 +230,15 @@ export function blindIndex(value, label = 'default') {
   return createHmac('sha256', key).update(String(value).trim().toUpperCase()).digest('hex');
 }
 
-export const nidHash = (nid) => blindIndex(nid, 'nid');
+/**
+ * NID blind index. Bangladeshi NIDs are 10 (smart card), 13 or 17 digits and
+ * people type them with spaces / dashes; the index is therefore always built
+ * from the DIGITS ONLY. The same canonical form is used by the HTTP validator,
+ * create/update, the nominee flows and duplicate lookup, so formatting can
+ * never create a second "unique" identity for the same NID.
+ */
+export const cleanNidDigits = (value) => String(value ?? '').replace(/\D/g, '');
+export const nidHash = (nid) => blindIndex(cleanNidDigits(nid), 'nid');
 export const last4 = (value) => (value ? String(value).replace(/\D/g, '').slice(-4) : null);
 
 // ---------------------------------------------------------------------------

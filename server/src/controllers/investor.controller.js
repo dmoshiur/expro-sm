@@ -1,10 +1,14 @@
 import { Validator, LIMITS } from '../utils/validate.js';
 import { ok, created, binary } from '../utils/http.js';
-import { badRequest, notFound } from '../utils/errors.js';
+import { badRequest, notFound, forbidden, unprocessable } from '../utils/errors.js';
 import { parsePagination, paged } from '../utils/pagination.js';
 import { dhakaDate } from '../utils/dates.js';
 import * as investorService from '../services/investor.service.js';
 import * as investorAuth from '../services/investor-auth.service.js';
+import * as walletService from '../services/wallet.service.js';
+import * as documentService from '../services/document.service.js';
+import * as alertsService from '../services/alerts.service.js';
+import { toPoisha } from '../utils/money.js';
 import { INVESTOR_PASSWORD_MIN_LENGTH } from '../services/crypto.service.js';
 import { deriveStatus, INSTALLMENT_STATUSES } from '../services/installment.service.js';
 import { maskMobile } from '../utils/mask.js';
@@ -16,6 +20,7 @@ export const INSTALLMENT_STATUS_FILTERS = INSTALLMENT_STATUSES;
 
 /** Optional profile fields (migration 002), shared by admin + portal forms. */
 export function applyProfileValidators(v) {
+  v.string('name_bangla', { required: false, max: LIMITS.name, label: 'Name (Bangla)' });
   v.email('email', { required: false });
   v.mobile('alternate_mobile', { required: false, label: 'Alternate mobile' });
   v.date('date_of_birth', { required: false, label: 'Date of birth' });
@@ -50,10 +55,12 @@ export function validateNominees(v, field = 'nominees') {
       if (!Number.isFinite(num) || num <= 0 || num > 100) sub.fail('share_percent', 'Share must be between 0 and 100');
       else sub.values.share_percent = Math.round(num * 100) / 100;
       return {
+        // An existing nominee keeps its row id so NIDs and photos survive a save.
+        id: Number.isInteger(Number(item?.id)) && Number(item.id) > 0 ? Number(item.id) : null,
         name: sub.values.name,
         relation: sub.values.relation,
         mobile: sub.values.mobile,
-        nid: sub.values.nid ?? null,
+        nid: sub.values.nid,
         share_percent: sub.values.share_percent,
       };
     },
@@ -119,12 +126,26 @@ export async function detail(req, res) {
   );
 
   const today = dhakaDate();
+  const [documents, wallet, alerts, portalAccess] = await Promise.all([
+    documentService.listDocuments(id),
+    walletService.getWallet(id),
+    alertsService.getInvestorAlerts(id),
+    investorAuth.getPortalAccess(id).catch(() => null),
+  ]);
   return ok(res, {
     investor: investorService.presentInvestor(investor, req.admin.role),
     nominees: investorService.presentNominees(investor.nominees, req.admin.role),
-    investments: investments.rows,
+    investments: investments.rows.map((row) => ({
+      ...row,
+      progress_percent:
+        Number(row.total_amount) > 0 ? Math.min(100, Math.round((Number(row.collected) / Number(row.total_amount)) * 100)) : 0,
+    })),
     installments: installments.rows.map((row) => ({ ...row, effective_status: deriveStatus(row, today) })),
     payments: payments.rows,
+    documents,
+    wallet,
+    alerts,
+    portal: portalAccess ? { ...portalAccess, login_url: `${config.publicBaseUrl}/portal/login` } : null,
   });
 }
 
@@ -340,6 +361,162 @@ export async function setPortalEnabled(req, res) {
 export async function revokePortalSessions(req, res) {
   const portal = await investorAuth.revokePortalSessionsByAdmin(Number(req.params.id), req.admin, req);
   return ok(res, { portal });
+}
+
+// ---------------------------------------------------------------------------
+// Wallet (staff side): ledger, manual entries and request decisions
+// ---------------------------------------------------------------------------
+/** Taka input (string/number) -> integer poisha, with a field-level 422. */
+export function parseTakaAmount(value, field = 'amount') {
+  const poisha = toPoisha(value);
+  if (!Number.isSafeInteger(poisha) || poisha <= 0) {
+    throw unprocessable('Enter a valid amount greater than zero', { [field]: 'Enter a valid amount greater than zero' });
+  }
+  return poisha;
+}
+
+/** GET /investors/:id/wallet */
+export async function wallet(req, res) {
+  return ok(res, await walletService.getWallet(Number(req.params.id)));
+}
+
+/** POST /investors/:id/wallet/transactions - manual ledger entry (COMPLETED). */
+export async function recordWalletEntry(req, res) {
+  const v = new Validator(req.body);
+  v.oneOf('type', walletService.WALLET_TYPES, { required: true, label: 'Type' });
+  v.oneOf('direction', ['CREDIT', 'DEBIT'], { required: false, label: 'Direction' });
+  v.oneOf('method', walletService.WALLET_METHODS, { required: false, label: 'Method' });
+  v.string('externalReference', { required: false, max: 120, label: 'Reference' });
+  v.string('note', { required: false, max: 500, label: 'Note' });
+  const input = v.result();
+  const amount = parseTakaAmount(req.body?.amount);
+  const result = await walletService.recordLedgerEntry(
+    Number(req.params.id),
+    { ...input, amount },
+    req.admin,
+    req,
+  );
+  return created(res, result);
+}
+
+/** POST /investors/:id/wallet/transactions/:txId/decide { decision, note } */
+export async function decideWalletTransaction(req, res) {
+  const v = new Validator(req.body);
+  v.oneOf('decision', ['APPROVE', 'REJECT'], { required: true, label: 'Decision' });
+  v.string('note', { required: false, max: 500, label: 'Note' });
+  const input = v.result();
+  const result = await walletService.decideTransaction(
+    Number(req.params.id),
+    Number(req.params.txId),
+    input,
+    req.admin,
+    req,
+  );
+  return ok(res, result);
+}
+
+// ---------------------------------------------------------------------------
+// Documents: upload, file read and Super Admin verification
+// ---------------------------------------------------------------------------
+/** Kinds whose bytes are NID / signature material: Super Admin only. */
+const SUPER_ADMIN_DOCUMENTS = ['NID_FRONT', 'NID_BACK', 'SIGNATURE'];
+
+function assertCanUseDocument(admin, kind, { write = false } = {}) {
+  if (kind === 'PHOTO' || kind === 'NOMINEE_PHOTO') {
+    if (write && admin.role === 'VIEWER') throw forbidden('Viewers cannot upload documents');
+    return;
+  }
+  if (admin.role !== 'SUPER_ADMIN') {
+    throw forbidden('Only a Super Admin can access NID and signature documents');
+  }
+}
+
+/** GET /investors/:id/documents */
+export async function listDocuments(req, res) {
+  return ok(res, await documentService.listDocuments(Number(req.params.id)));
+}
+
+/** POST /investors/:id/documents/:kind  (raw image/pdf body) */
+export async function uploadDocument(req, res) {
+  const kind = String(req.params.kind ?? '').toUpperCase();
+  assertCanUseDocument(req.admin, kind, { write: true });
+  const result = await documentService.uploadDocument(Number(req.params.id), kind, req.body, {
+    actor: req.admin,
+    req,
+    nomineeId: req.params.nomineeId ? Number(req.params.nomineeId) : null,
+  });
+  return ok(res, {
+    document: result,
+    documents: await documentService.listDocuments(Number(req.params.id)),
+  });
+}
+
+/** GET /investors/:id/documents/:kind/file */
+export async function documentFile(req, res) {
+  const kind = String(req.params.kind ?? '').toUpperCase();
+  assertCanUseDocument(req.admin, kind);
+  const file = await documentService.getDocumentFile(Number(req.params.id), kind, {
+    actor: req.admin,
+    req,
+    nomineeId: req.params.nomineeId ? Number(req.params.nomineeId) : null,
+  });
+  return binary(res, file.buffer, { mime: file.mime, cache: 'private, max-age=60' });
+}
+
+/** POST /investors/:id/documents/:kind/review { status, note } */
+export async function reviewDocument(req, res) {
+  const kind = String(req.params.kind ?? '').toUpperCase();
+  const v = new Validator(req.body);
+  v.oneOf('status', documentService.REVIEW_STATUSES, { required: true, label: 'Review status' });
+  v.string('note', { required: false, max: 500, label: 'Note' });
+  const input = v.result();
+  const document = await documentService.reviewDocument(Number(req.params.id), kind, input, req.admin, req, {
+    nomineeId: req.params.nomineeId ? Number(req.params.nomineeId) : null,
+  });
+  return ok(res, { document, documents: await documentService.listDocuments(Number(req.params.id)) });
+}
+
+/** Nominee photo upload / read / review (thin wrappers around the document API). */
+export async function uploadNomineePhoto(req, res) {
+  req.params.kind = 'NOMINEE_PHOTO';
+  return uploadDocument(req, res);
+}
+
+export async function nomineePhotoFile(req, res) {
+  req.params.kind = 'NOMINEE_PHOTO';
+  return documentFile(req, res);
+}
+
+export async function reviewNomineePhoto(req, res) {
+  req.params.kind = 'NOMINEE_PHOTO';
+  return reviewDocument(req, res);
+}
+
+// ---------------------------------------------------------------------------
+// Membership approval + account freeze (Super Admin controls)
+// ---------------------------------------------------------------------------
+/** POST /investors/:id/membership { status, note } */
+export async function decideMembership(req, res) {
+  const v = new Validator(req.body);
+  v.oneOf('status', ['APPROVED', 'REJECTED'], { required: true, label: 'Membership status' });
+  v.string('note', { required: false, max: 500, label: 'Note' });
+  const input = v.result();
+  const investor = await investorService.decideMembership(Number(req.params.id), input, req.admin, req);
+  return ok(res, { investor: investorService.presentInvestor(investor, req.admin.role) });
+}
+
+/** POST /investors/:id/freeze { frozen, reason } */
+export async function setFrozen(req, res) {
+  const v = new Validator(req.body);
+  v.bool('frozen', { required: true, label: 'Frozen' });
+  v.string('reason', { required: false, max: 500, label: 'Reason' });
+  const input = v.result();
+  if (input.frozen && !input.reason) {
+    throw unprocessable('Explain why the account is being frozen', { reason: 'Explain why the account is being frozen' });
+  }
+  const { frozen, reason } = input;
+  const investor = await investorService.setFrozen(Number(req.params.id), { frozen, reason }, req.admin, req);
+  return ok(res, { investor: investorService.presentInvestor(investor, req.admin.role) });
 }
 
 export function notFoundInvestor() {

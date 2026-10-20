@@ -32,6 +32,7 @@ export const INVESTOR_STATUSES = ['ACTIVE', 'INACTIVE', 'CLOSED'];
 export const GENDERS = ['MALE', 'FEMALE', 'OTHER'];
 /** Optional profile columns (migration 002) an admin or the investor can fill in. */
 export const PROFILE_FIELDS = [
+  'name_bangla',
   'email',
   'alternate_mobile',
   'date_of_birth',
@@ -71,7 +72,8 @@ export async function listInvestors(filters = {}, client = undefined) {
   const whereSql = `where ${where.join(' and ')}`;
 
   const rows = await query(
-    `select i.id, i.member_code, i.name, i.mobile, i.email, i.address, i.status, i.nid_last4,
+    `select i.id, i.member_code, i.name, i.name_bangla, i.mobile, i.email, i.address, i.status, i.nid_last4,
+            i.membership_status, i.frozen_at,
             (i.nid_encrypted is not null) as has_nid,
             (i.photo is not null) as has_photo, (i.nid_scan is not null) as has_nid_scan,
             i.portal_enabled, (i.password_hash is not null) as has_portal_password, i.last_login_at,
@@ -100,7 +102,8 @@ export async function listInvestors(filters = {}, client = undefined) {
 
 export async function getInvestor(id, client = undefined) {
   const res = await query(
-    `select i.*, (i.photo is not null) as has_photo, (i.nid_scan is not null) as has_nid_scan
+    `select i.*, (i.photo is not null) as has_photo, (i.nid_scan is not null) as has_nid_scan,
+            (i.nid_encrypted is not null) as has_nid
        from investors i where i.id = ?1`,
     [id],
     client,
@@ -174,12 +177,13 @@ export async function createInvestor(data, actor, req) {
     }
 
     const res = await query(
-      `insert into investors (name, mobile, nid_encrypted, nid_hash, nid_last4, address, notes, status, created_by, updated_by,
+      `insert into investors (name, name_bangla, mobile, nid_encrypted, nid_hash, nid_last4, address, notes, status, created_by, updated_by,
                               email, alternate_mobile, date_of_birth, gender, father_name, mother_name,
-                              religion, education, present_address, permanent_address)
-       values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19) returning *`,
+                              religion, education, present_address, permanent_address, membership_status)
+       values (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,'PENDING') returning *`,
       [
         name,
+        data.name_bangla ?? null,
         mobile,
         nidEncrypted,
         nidHashed,
@@ -432,10 +436,10 @@ export async function assertNomineeSharesTotal(client, investorId) {
   }
 }
 
-async function insertNominees(client, investorId, nominees) {
+async function insertNominees(client, investorId, nominees, { checkTotal = true } = {}) {
   if (nominees.length > 3) throw badRequest('An investor can have at most 3 nominees');
   const total = nominees.reduce((sum, n) => sum + shareToHundredths(n.share_percent), 0);
-  if (total !== 10000) {
+  if (checkTotal && total !== 10000) {
     throw badRequest(`Nominee shares must total 100% (currently ${total / 100}%)`, { total: total / 100 });
   }
   for (const n of nominees) {
@@ -464,8 +468,45 @@ export async function replaceNominees(investorId, nominees, actor, req) {
     if (!investor.rows[0]) throw notFound('Investor not found');
     const before = await listNominees(investorId, client);
 
-    await query('delete from nominees where investor_id = ?1', [investorId], client);
-    if (nominees.length > 0) await insertNominees(client, investorId, nominees);
+    if (nominees.length > 3) throw badRequest('An investor can have at most 3 nominees');
+    const total = nominees.reduce((sum, n) => sum + shareToHundredths(n.share_percent), 0);
+    if (nominees.length > 0 && total !== 10000) {
+      throw badRequest(`Nominee shares must total 100% (currently ${total / 100}%)`, { total: total / 100 });
+    }
+
+    // Match by row id so an unchanged nominee keeps its encrypted NID and any
+    // uploaded photo. A nominee omitted from the payload is removed (cascade).
+    const existingIds = new Set(before.map((row) => row.id));
+    const keep = new Set();
+    for (const n of nominees) {
+      const id = n.id && existingIds.has(Number(n.id)) ? Number(n.id) : null;
+      if (!id) continue;
+      keep.add(id);
+      const sets = ['name = ?2', 'relation = ?3', 'mobile = ?4', 'share_percent = ?5'];
+      const params = [id, n.name, n.relation, n.mobile, n.share_percent];
+      if (n.nid) {
+        params.push(encryptField(n.nid, { aad: `investor:${investorId}:nominee_nid` }));
+        sets.push(`nid_encrypted = ?${params.length}`);
+        params.push(nidHash(n.nid));
+        sets.push(`nid_hash = ?${params.length}`);
+        params.push(last4(n.nid));
+        sets.push(`nid_last4 = ?${params.length}`);
+      }
+      params.push(investorId);
+      const investorParam = params.length;
+      await query(
+        `update nominees set ${sets.join(', ')} where id = ?1 and investor_id = ?${investorParam}`,
+        params,
+        client,
+      );
+    }
+
+    for (const row of before) {
+      if (!keep.has(row.id)) await query('delete from nominees where id = ?1 and investor_id = ?2', [row.id, investorId], client);
+    }
+    const fresh = nominees.filter((n) => !n.id || !existingIds.has(Number(n.id)));
+    // The final set (not just the new rows) is validated by assertNomineeSharesTotal.
+    if (fresh.length > 0) await insertNominees(client, investorId, fresh, { checkTotal: false });
     await assertNomineeSharesTotal(client, investorId);
 
     const after = await listNominees(investorId, client);
@@ -539,6 +580,83 @@ function nomineeAuditShape(n) {
     share_percent: n.share_percent,
     has_nid: Boolean(n.nid_last4),
   };
+}
+
+/**
+ * Membership verification decision (admin). A pending / rejected member is not
+ * deleted - the full ledger stays intact; only the badge and the certificate
+ * wording change.
+ */
+export async function decideMembership(id, { status, note = null }, actor, req) {
+  if (!['APPROVED', 'REJECTED', 'PENDING'].includes(status)) throw badRequest('Invalid membership status');
+  return withTransaction(async (client) => {
+    const current = await query('select id, membership_status from investors where id = ?1', [id], client);
+    const before = current.rows[0];
+    if (!before) throw notFound('Investor not found');
+    const res = await query(
+      `update investors
+          set membership_status = ?2, membership_note = ?3,
+              membership_decided_at = ${NOW}, membership_decided_by = ?4, updated_at = ${NOW}
+        where id = ?1 returning *`,
+      [id, status, note, actor?.id ?? null],
+      client,
+    );
+    await audit.record(
+      {
+        action: audit.AUDIT_ACTIONS.INVESTOR_MEMBERSHIP_DECIDED,
+        entity: 'investor',
+        entityId: id,
+        oldValue: { membership_status: before.membership_status },
+        newValue: { membership_status: status, note },
+        actor,
+        req,
+      },
+      client,
+    );
+    return { ...res.rows[0], nominees: await listNominees(id, client) };
+  });
+}
+
+/**
+ * Freeze / unfreeze an account. A frozen account can still read the portal but
+ * cannot move wallet money or start a payment; all live portal sessions are
+ * revoked on freeze so the member sees the state on their next sign-in.
+ */
+export async function setFrozen(id, { frozen, reason = null }, actor, req) {
+  return withTransaction(async (client) => {
+    const current = await query('select id, frozen_at from investors where id = ?1', [id], client);
+    const before = current.rows[0];
+    if (!before) throw notFound('Investor not found');
+    const sets = frozen
+      ? [`frozen_at = ${NOW}`, 'frozen_reason = ?2', 'updated_by = ?3']
+      : ['frozen_at = null', 'frozen_reason = null', 'updated_by = ?2'];
+    const res = await query(
+      `update investors set ${sets.join(', ')}, updated_at = ${NOW} where id = ?1 returning *`,
+      frozen ? [id, reason, actor?.id ?? null] : [id, actor?.id ?? null],
+      client,
+    );
+    if (frozen) {
+      await client.query(
+        `update investor_sessions set revoked_at = ${NOW}, revoked_reason = 'ACCOUNT_FROZEN'
+          where investor_id = ?1 and revoked_at is null`,
+        [id],
+      );
+      clearInvestorSessionCache();
+    }
+    await audit.record(
+      {
+        action: frozen ? audit.AUDIT_ACTIONS.INVESTOR_FROZEN : audit.AUDIT_ACTIONS.INVESTOR_UNFROZEN,
+        entity: 'investor',
+        entityId: id,
+        oldValue: { frozen: Boolean(before.frozen_at) },
+        newValue: { frozen: Boolean(frozen), reason },
+        actor,
+        req,
+      },
+      client,
+    );
+    return { ...res.rows[0], nominees: await listNominees(id, client) };
+  });
 }
 
 // ---------------------------------------------------------------------------

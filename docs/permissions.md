@@ -8,8 +8,8 @@ Roles (`admins.role`) — `ROLE_RANK` in `server/src/services/auth.service.js`:
 
 | Role | Rank | Intent |
 | --- | --- | --- |
-| `SUPER_ADMIN` | 3 | Everything, including staff accounts, audit trail, nominee edits and NID documents. |
-| `ACCOUNTANT` | 2 | Day-to-day bookkeeping: investors, investments, installments, manual payments, links, reports. |
+| `SUPER_ADMIN` | 3 | Everything, including staff accounts, audit trail, nominee edits, NID documents, document review, membership approval and account freeze. |
+| `ACCOUNTANT` | 2 | Day-to-day bookkeeping: investors, investments, installments, manual payments, links, wallet ledger + request decisions, support replies, reports. |
 | `VIEWER` | 1 | Read-only dashboards/lists. All personal data is masked. |
 
 ## Enforcement points
@@ -76,6 +76,21 @@ transition revokes every session immediately.
 | `GET /api/investors/:id/portal-access` | ✅ | ✅ | ✅ (mobile masked) |
 | `POST /api/investors/:id/portal-access/password` (set/reset, optional SMS) | ✅ | ✅ | ❌ |
 | `POST /api/investors/:id/portal-access/enabled`, `…/revoke-sessions` | ✅ | ✅ | ❌ |
+| `GET /api/investors/:id/wallet` (summary + ledger) | ✅ | ✅ | ✅ |
+| `POST /api/investors/:id/wallet/transactions` (manual ledger entry) | ✅ | ✅ | ❌ |
+| `POST /api/investors/:id/wallet/transactions/:txId/decide` (APPROVE/REJECT) | ✅ | ✅ | ❌ |
+| `GET /api/investors/:id/documents` (slot states) | ✅ | ✅ | ✅ (no bytes) |
+| `POST /api/investors/:id/documents/:kind` (raw image / PDF body) | ✅ | PHOTO / NOMINEE_PHOTO only | ❌ |
+| `GET /api/investors/:id/documents/:kind/file` | ✅ | PHOTO / NOMINEE_PHOTO only | ❌ |
+| `POST /api/investors/:id/documents/:kind/review`, `…/nominees/:nomineeId/photo/review` | ✅ | ❌ 403 | ❌ |
+| `POST /api/investors/:id/membership` (APPROVED/REJECTED) | ✅ | ❌ | ❌ |
+| `POST /api/investors/:id/freeze` (frozen + reason) | ✅ | ❌ | ❌ |
+
+The document slots are `PHOTO`, `NID_FRONT`, `NID_BACK`, `SIGNATURE` and
+`NOMINEE_PHOTO`. Every upload is audited and resets the slot to `PENDING`;
+only a Super Admin can `VERIFIED` / `REJECTED` it (rejection requires a note).
+Freezing requires a reason, blocks withdrawals / pay links and revokes the
+investor's live portal sessions.
 
 Every NID reveal and NID-scan read is written to the audit log. A `VIEWER`
 receives `mobile`/`email`/`alternate_mobile` masked, addresses `'***'`,
@@ -106,6 +121,14 @@ password revokes live sessions immediately.
 | `GET /api/portal/investments`, `…/installments`, `…/payments` | Scoped by session investor id - there is no `:id` in portal URLs. |
 | `POST /api/portal/installments/:id/pay-link` | Own open installment only (others → 404); reuses the public bKash pay flow. |
 | `GET/POST /api/portal/photo`, `GET/POST /api/portal/nid-scan` | Own documents; same magic-byte validation + encryption; reads audited. |
+| `GET /api/portal/wallet` | Own summary + ledger only. |
+| `POST /api/portal/wallet/requests` | Deposit / withdrawal **requests** (PENDING); never writes a completed balance. |
+| `GET /api/portal/documents` | Own slot states (photo, NID front/back, signature, nominee photos). |
+| `POST /api/portal/documents/:kind` | Own upload; always resets the slot to PENDING and is audited. |
+| `GET /api/portal/documents/:kind/file`, `GET /api/portal/nominees/:id/photo` | Own bytes only; NID / signature reads audited. |
+| `POST /api/portal/nominees/:nomineeId/photo` | Own nominee photo upload. |
+| `GET/POST /api/portal/support/tickets`, `…/:id/messages`, `…/:id/close` | Own tickets only; investors cannot address another investor's ticket. |
+| `GET /api/portal/statement.html`, `GET /api/portal/certificate` | Own print-ready statement / membership certificate. |
 | `GET /api/portal/payments/:id/receipt` | Own successful payments only (others → 404). |
 | `GET /api/portal/statement.csv` | Own statement; audited as a report export. |
 
@@ -150,6 +173,19 @@ bKash and record the adjustment manually.
 
 `GET /api/health` is unauthenticated: process status, DB round-trip, migration
 count, scheduler state. No secrets, no PII.
+
+### Support inbox (`/api/support`)
+
+| Endpoint | SUPER_ADMIN | ACCOUNTANT | VIEWER |
+| --- | --- | --- | --- |
+| `GET /api/support/summary` | ✅ | ✅ | ✅ |
+| `GET /api/support/tickets`, `GET /api/support/tickets/:id` | ✅ | ✅ | ✅ |
+| `POST /api/support/tickets/:id/messages`, `POST …/:id/status` | ✅ | ✅ | ❌ |
+
+Investors open and read only their own tickets through `/api/portal/support/*`.
+Statuses move OPEN → IN_PROGRESS → RESOLVED → CLOSED; an investor reply on a
+RESOLVED ticket reopens it, and a staff reply on an OPEN ticket moves it to
+IN_PROGRESS. Every change is audited.
 
 ## Audit coverage
 

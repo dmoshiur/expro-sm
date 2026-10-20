@@ -21,7 +21,7 @@ const { runMigrations, appliedMigrations, MIGRATIONS_DIR } = await import('../sr
 const { runDbCheck } = await import('../src/db/check.js');
 const { logger } = await import('../src/utils/logger.js');
 const initial = '001_turso_initial_schema.sql';
-const allMigrations = [initial, '002_investor_portal_login.sql'];
+const allMigrations = [initial, '002_investor_portal_login.sql', '003_investor_experience.sql'];
 
 beforeEach(async () => {
   await connectDatabase();
@@ -68,7 +68,7 @@ function boot({ migrate = false, listen = false } = {}) {
 test('empty database: read-only startup reports pending, metadata bootstrap is idempotent', async () => {
   const child = await boot();
   assert.equal(child.code, 1);
-  assert.match(child.output, /Database schema is missing 2 migration/);
+  assert.match(child.output, new RegExp(`Database schema is missing ${allMigrations.length} migration`));
   assert.doesNotMatch(child.output, /database query failed/);
   assert.equal(await exists('schema_migrations'), false, 'verify-only path must not mutate');
   assert.deepEqual(await appliedMigrations(), []);

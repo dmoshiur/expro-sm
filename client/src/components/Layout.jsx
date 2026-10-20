@@ -11,6 +11,7 @@ const NAV = [
   { to: '/payments', label: 'Payments', icon: '৳' },
   { to: '/reports/collections', label: 'Collections', icon: '◔' },
   { to: '/reports/due', label: 'Due & overdue', icon: '⏱' },
+  { to: '/support', label: 'Support inbox', icon: '✉' },
   { group: 'Administration', roles: ['SUPER_ADMIN'] },
   { to: '/admins', label: 'Admins', icon: '⚙', roles: ['SUPER_ADMIN'] },
   { to: '/audit', label: 'Audit log', icon: '🛡', roles: ['SUPER_ADMIN'] },

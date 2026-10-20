@@ -67,6 +67,27 @@ export function useAction() {
   return { busy, error, run, setError };
 }
 
+/**
+ * Re-run a loader whenever the tab regains focus (and on an optional interval),
+ * so wallet balances and pension progress stay live without a websocket.
+ */
+export function useRefreshOnFocus(reload, { intervalMs = 0 } = {}) {
+  useEffect(() => {
+    if (!reload) return undefined;
+    const onFocus = () => reload();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    const timer = intervalMs ? setInterval(() => {
+      if (document.visibilityState === 'visible') reload();
+    }, intervalMs) : null;
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+      if (timer) clearInterval(timer);
+    };
+  }, [reload, intervalMs]);
+}
+
 /** Local storage backed state (used for filters that should stick). */
 export function usePersistentState(key, initial) {
   const [value, setValue] = useState(() => {

@@ -34,6 +34,26 @@ router.get('/payments', asyncHandler(ctrl.payments));
 router.post('/installments/:id/pay-link', payStartLimiter, asyncHandler(ctrl.payLink));
 router.get('/payments/:id/receipt', asyncHandler(ctrl.receipt));
 router.get('/statement.csv', asyncHandler(ctrl.statementCsv));
+router.get('/statement.html', asyncHandler(ctrl.statementHtml));
+router.get('/certificate', asyncHandler(ctrl.certificate));
+
+// Wallet: balance, ledger and self-service deposit / withdrawal requests.
+router.get('/wallet', asyncHandler(ctrl.wallet));
+router.post('/wallet/requests', payStartLimiter, asyncHandler(ctrl.requestWalletTransaction));
+
+// Document slots (photo, NID front/back, signature) + nominee photos.
+router.get('/documents', asyncHandler(ctrl.documents));
+router.post('/documents/:kind', photoUpload, scanUpload, ensureRawBody, asyncHandler(ctrl.uploadOwnDocument));
+router.get('/documents/:kind/file', asyncHandler(ctrl.ownDocumentFile));
+router.post('/nominees/:nomineeId/photo', photoUpload, ensureRawBody, asyncHandler(ctrl.uploadOwnNomineePhoto));
+router.get('/nominees/:nomineeId/photo', asyncHandler(ctrl.ownNomineePhotoFile));
+
+// Support / inquiries.
+router.get('/support/tickets', asyncHandler(ctrl.supportTickets));
+router.post('/support/tickets', asyncHandler(ctrl.createSupportTicket));
+router.get('/support/tickets/:id', asyncHandler(ctrl.supportTicket));
+router.post('/support/tickets/:id/messages', asyncHandler(ctrl.replySupportTicket));
+router.post('/support/tickets/:id/close', asyncHandler(ctrl.closeSupportTicket));
 
 router.get('/photo', asyncHandler(ctrl.getPhoto));
 router.post('/photo', photoUpload, ensureRawBody, asyncHandler(ctrl.uploadPhoto));

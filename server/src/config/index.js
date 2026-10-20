@@ -57,6 +57,9 @@ function loadConfig(env = process.env) {
     maskLogs: bool(env, 'MASK_LOGS', true),
     trustProxy: int(env, 'TRUST_PROXY', 1),
     allowedOrigins: list(env, 'ALLOWED_ORIGINS'),
+    // Embedding the app in an iframe is refused by default (clickjacking).
+    // Set ALLOW_EMBEDDING=true only for local previews / sandboxes.
+    allowEmbedding: bool(env, 'ALLOW_EMBEDDING', false),
 
     db: {
       // Turso (libSQL). Remote in production; file: only for tests/dev.
