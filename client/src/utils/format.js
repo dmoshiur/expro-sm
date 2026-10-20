@@ -70,6 +70,9 @@ export function dueLabel(isoDate) {
 
 export const STATUS_LABELS = {
   PENDING: 'Pending',
+  COMPLETED: 'Completed',
+  REJECTED: 'Rejected',
+  VERIFIED: 'Verified',
   PARTIALLY_PAID: 'Partially paid',
   PAID: 'Paid',
   OVERDUE: 'Overdue',
@@ -89,10 +92,13 @@ export function statusTone(status) {
     case 'PAID':
     case 'SUCCESS':
     case 'ACTIVE':
+    case 'COMPLETED':
+    case 'VERIFIED':
       return 'ok';
     case 'OVERDUE':
     case 'FAILED':
     case 'CLOSED':
+    case 'REJECTED':
       return 'danger';
     case 'PARTIALLY_PAID':
     case 'PENDING':
@@ -106,6 +112,54 @@ export function statusTone(status) {
     default:
       return 'info';
   }
+}
+
+/**
+ * Bangladeshi mobile normalisation for form payloads: accepts 01712345678,
+ * +8801712345678, 880 1712-345678 and returns 01XXXXXXXXX. The API validator
+ * normalises too, but doing it in the form avoids avoidable 422 responses.
+ */
+export function normalizeBdPhone(value) {
+  let digits = String(value ?? '').replace(/\D/g, '');
+  if (!digits) return '';
+  // The country code replaces the leading 0: +880 1712-345678 -> 01712345678.
+  if (digits.startsWith('00880')) digits = `0${digits.slice(5)}`;
+  else if (digits.startsWith('880')) digits = `0${digits.slice(3)}`;
+  else if (digits.startsWith('88')) digits = `0${digits.slice(2)}`;
+  return digits;
+}
+
+export function isValidBdPhone(value) {
+  return /^01[3-9]\d{8}$/.test(normalizeBdPhone(value));
+}
+
+/** NID input -> digits only (10, 13 or 17 digits accepted by the API). */
+export function normalizeNid(value) {
+  return String(value ?? '').replace(/\D/g, '').slice(0, 17);
+}
+
+export function isValidNid(value) {
+  return /^\d{10}$|^\d{13}$|^\d{17}$/.test(normalizeNid(value));
+}
+
+/**
+ * Human grouping for the three NID lengths the API accepts. The stored value is
+ * always digits only; this is display sugar so staff can eyeball the number.
+ */
+export function formatNid(value) {
+  const digits = normalizeNid(value);
+  if (digits.length === 13) return `${digits.slice(0, 4)} ${digits.slice(4, 10)} ${digits.slice(10)}`;
+  if (digits.length === 17) return `${digits.slice(0, 4)} ${digits.slice(4, 8)} ${digits.slice(8, 15)} ${digits.slice(15)}`;
+  if (digits.length === 10) return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+  return digits;
+}
+
+/** 0-3 quality hint used next to the NID input. */
+export function nidHint(value) {
+  const digits = normalizeNid(value);
+  if (!digits) return { tone: 'muted', text: '10, 13 or 17 digits' };
+  if (digits.length === 10 || digits.length === 13 || digits.length === 17) return { tone: 'ok', text: `${digits.length} digits · accepted` };
+  return { tone: 'warn', text: `${digits.length} digits · needs 10, 13 or 17` };
 }
 
 export function maskMobile(mobile) {

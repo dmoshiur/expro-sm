@@ -1,8 +1,8 @@
 import { Link } from 'react-router-dom';
-import { dashboardApi, jobsApi } from '../../services/endpoints.js';
+import { dashboardApi, jobsApi, supportApi } from '../../services/endpoints.js';
 import { useApi } from '../../hooks/useApi.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { Alert, Badge, Card, Kpi, Spinner, Table } from '../../components/ui.jsx';
+import { Alert, Badge, Banner, Card, Kpi, Spinner, Table } from '../../components/ui.jsx';
 import { BarChart, Donut } from '../../components/Charts.jsx';
 import { formatBDT, formatDate, formatDateTime, formatNumber, dueLabel, maskMobile } from '../../utils/format.js';
 
@@ -11,6 +11,7 @@ export function Dashboard() {
   const { data, loading, error, reload } = useApi(() => dashboardApi.summary(), []);
   const isSuperAdmin = admin?.role === 'SUPER_ADMIN';
   const jobs = useApi(() => (isSuperAdmin ? jobsApi.status() : Promise.resolve(null)), [isSuperAdmin]);
+  const support = useApi(() => supportApi.summary(), []);
 
   if (loading) return <Spinner label="Loading dashboard…" />;
   if (error) return <Alert tone="error">{error.message}</Alert>;
@@ -28,6 +29,47 @@ export function Dashboard() {
           ⟳ Refresh
         </button>
       </div>
+
+      {kpis.overdueCount > 0 || support.data?.open_tickets > 0 || support.data?.pending_wallet_requests > 0 ? (
+        <div className="banners" style={{ marginBottom: 14 }}>
+          {kpis.overdueCount > 0 ? (
+            <Banner
+              tone="danger"
+              title={`${kpis.overdueCount} overdue installment${kpis.overdueCount === 1 ? '' : 's'} · ${formatBDT(kpis.overdueAmount)}`}
+              action={<Link className="btn sm" to="/reports/due">Chase list</Link>}
+            >
+              These members have missed due dates. Send payment links from the chase list or record a manual payment.
+            </Banner>
+          ) : null}
+          {kpis.upcomingDueCount > 0 ? (
+            <Banner
+              tone="warn"
+              title={`Due in the next 7 days: ${formatBDT(kpis.upcomingDueAmount)}`}
+              action={<Link className="btn sm" to="/reports/due">See who</Link>}
+            >
+              {kpis.upcomingDueCount} installment{kpis.upcomingDueCount === 1 ? '' : 's'} fall due this week.
+            </Banner>
+          ) : null}
+          {support.data?.pending_wallet_requests > 0 ? (
+            <Banner
+              tone="info"
+              title={`${support.data.pending_wallet_requests} wallet request${support.data.pending_wallet_requests === 1 ? '' : 's'} awaiting approval`}
+              action={<Link className="btn sm" to="/support">Review</Link>}
+            >
+              Deposit and withdrawal requests from the investor portal reduce available balances until they are approved or rejected.
+            </Banner>
+          ) : null}
+          {support.data?.open_tickets > 0 ? (
+            <Banner
+              tone="info"
+              title={`${support.data.open_tickets} open support inquir${support.data.open_tickets === 1 ? 'y' : 'ies'}`}
+              action={<Link className="btn sm" to="/support">Open inbox</Link>}
+            >
+              Members are waiting for a reply in the investor portal.
+            </Banner>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="grid cols-4" style={{ marginBottom: 16 }}>
         <Kpi label="Total invested" value={formatBDT(kpis.totalInvested, { compact: true })} hint={`${formatNumber(kpis.investmentCount)} investments`} />

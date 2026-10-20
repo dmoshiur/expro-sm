@@ -26,6 +26,8 @@ import { syncSeedAdmin, syncSeedSuperAdmin } from '../services/auth.service.js';
 import { createInvestor } from '../services/investor.service.js';
 import { createInvestment } from '../services/investment.service.js';
 import { issueToken } from '../services/paylink.service.js';
+import { recordLedgerEntry, requestTransaction } from '../services/wallet.service.js';
+import { createTicket } from '../services/support.service.js';
 import { addDays, dhakaDate } from '../utils/dates.js';
 import { formatBDT } from '../utils/money.js';
 import { normalizeEmail, normalizePasswordInput } from '../utils/validate.js';
@@ -289,6 +291,51 @@ async function createSampleData(actor) {
 
   const linkInstallment = investments[0].installments[0];
   const link = await issueToken(linkInstallment.id, { actor, req: null });
+
+  // Sample member-experience data: verified memberships, Bangla name, wallet
+  // ledger entries (one pending request) and a support inquiry.
+  await query(
+    `update investors set membership_status = 'APPROVED', membership_decided_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            name_bangla = case id when ?1 then 'রহিম উদ্দিন' when ?2 then 'করিম শেখ' else 'নুসরাত জাহান' end
+      where id in (?1, ?2, ?3)`,
+    [createdInvestors[0].id, createdInvestors[1].id, createdInvestors[2].id],
+  );
+  const walletEntries = [
+    { index: 0, type: 'DEPOSIT', amount: 5_000_000, method: 'BKASH', reference: 'SEED-BKASH-0001', note: 'Initial wallet deposit' },
+    { index: 0, type: 'EARNING', amount: 350_000, note: 'Quarterly profit share' },
+    { index: 0, type: 'WITHDRAWAL', amount: 1_000_000, method: 'BKASH', note: 'Member withdrawal' },
+    { index: 1, type: 'DEPOSIT', amount: 2_000_000, method: 'CASH', note: 'Cash deposit at office' },
+    { index: 1, type: 'FEE', amount: 50_000, note: 'Annual service fee' },
+  ];
+  for (const entry of walletEntries) {
+    await recordLedgerEntry(
+      createdInvestors[entry.index].id,
+      {
+        type: entry.type,
+        amount: entry.amount,
+        method: entry.method ?? null,
+        externalReference: entry.reference ?? null,
+        note: entry.note ?? null,
+      },
+      actor,
+      null,
+    );
+  }
+  await requestTransaction(
+    createdInvestors[0].id,
+    { type: 'DEPOSIT', amount: 1_000_000, method: 'BKASH', note: 'Monthly savings top-up' },
+    null,
+  );
+  await createTicket(
+    createdInvestors[0].id,
+    {
+      subject: 'When will my wallet withdrawal be approved?',
+      category: 'WALLET',
+      priority: 'NORMAL',
+      message: 'Assalamu alaikum. I requested a withdrawal from my wallet yesterday. How long does approval take?',
+    },
+    null,
+  );
 
   const totalInstallments = plans.reduce((sum, p) => sum + p.installmentCount, 0);
   process.stdout.write(

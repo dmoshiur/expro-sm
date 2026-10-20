@@ -20,6 +20,22 @@ export const investorsApi = {
   uploadNidScan: (id, file) => api.upload(`/investors/${id}/nid-scan`, file, file.type),
   photoUrl: (id) => `/api/investors/${id}/photo`,
   nidScanUrl: (id) => `/api/investors/${id}/nid-scan`,
+  // Document slots (photo / NID front / NID back / signature) + verification.
+  documents: (id) => api.get(`/investors/${id}/documents`),
+  uploadDocument: (id, kind, file) => api.upload(`/investors/${id}/documents/${kind}`, file, file.type),
+  documentUrl: (id, kind, bust = '') => `/api/investors/${id}/documents/${kind}/file${bust ? `?v=${bust}` : ''}`,
+  reviewDocument: (id, kind, payload) => api.post(`/investors/${id}/documents/${kind}/review`, payload),
+  uploadNomineePhoto: (id, nomineeId, file) => api.upload(`/investors/${id}/nominees/${nomineeId}/photo`, file, file.type),
+  nomineePhotoUrl: (id, nomineeId, bust = '') => `/api/investors/${id}/nominees/${nomineeId}/photo${bust ? `?v=${bust}` : ''}`,
+  reviewNomineePhoto: (id, nomineeId, payload) => api.post(`/investors/${id}/nominees/${nomineeId}/photo/review`, payload),
+  // Wallet ledger + request decisions
+  wallet: (id) => api.get(`/investors/${id}/wallet`),
+  recordWalletEntry: (id, payload) => api.post(`/investors/${id}/wallet/transactions`, payload),
+  decideWallet: (id, txId, payload) => api.post(`/investors/${id}/wallet/transactions/${txId}/decide`, payload),
+  // Membership approval / account freeze
+  decideMembership: (id, payload) => api.post(`/investors/${id}/membership`, payload),
+  setFrozen: (id, payload) => api.post(`/investors/${id}/freeze`, payload),
+  certificatePrint: (id) => api.openHtml(`/reports/investors/${id}/certificate.html`, { print: 'true' }),
   exportCsv: (params) => api.download('/reports/investors.csv', params),
 };
 
@@ -74,6 +90,14 @@ export const reportsApi = {
   paymentsPrint: (params) => api.openHtml('/reports/payments.html', params),
 };
 
+export const supportApi = {
+  summary: () => api.get('/support/summary'),
+  list: (params) => api.get('/support/tickets', params),
+  get: (id) => api.get(`/support/tickets/${id}`),
+  reply: (id, payload) => api.post(`/support/tickets/${id}/messages`, payload),
+  setStatus: (id, payload) => api.post(`/support/tickets/${id}/status`, payload),
+};
+
 export const auditApi = {
   list: (params) => api.get('/audit', params),
   filters: () => api.get('/audit/filters'),
@@ -126,4 +150,22 @@ export const portalApi = {
   nidScanUrl: '/api/portal/nid-scan',
   openReceipt: (paymentId) => api.openHtml(`/portal/payments/${paymentId}/receipt`, { print: 'true' }),
   statementCsv: () => api.download('/portal/statement.csv'),
+  // Wallet: live balance, ledger and self-service requests.
+  wallet: () => api.get('/portal/wallet'),
+  requestWallet: (payload) => api.post('/portal/wallet/requests', payload),
+  // Document slots + nominee photos.
+  documents: () => api.get('/portal/documents'),
+  uploadDocument: (kind, file) => api.upload(`/portal/documents/${kind}`, file, file.type),
+  documentUrl: (kind, bust = '') => `/api/portal/documents/${kind}/file${bust ? `?v=${bust}` : ''}`,
+  uploadNomineePhoto: (nomineeId, file) => api.upload(`/portal/nominees/${nomineeId}/photo`, file, file.type),
+  nomineePhotoUrl: (nomineeId, bust = '') => `/api/portal/nominees/${nomineeId}/photo${bust ? `?v=${bust}` : ''}`,
+  // Support / inquiries.
+  tickets: () => api.get('/portal/support/tickets'),
+  createTicket: (payload) => api.post('/portal/support/tickets', payload),
+  ticket: (id) => api.get(`/portal/support/tickets/${id}`),
+  replyTicket: (id, payload) => api.post(`/portal/support/tickets/${id}/messages`, payload),
+  closeTicket: (id) => api.post(`/portal/support/tickets/${id}/close`),
+  // Printable documents (print / save as PDF in the browser).
+  certificate: () => api.openHtml('/portal/certificate', { print: 'true' }),
+  statementPrint: () => api.openHtml('/portal/statement.html', { print: 'true' }),
 };

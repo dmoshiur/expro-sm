@@ -6,6 +6,7 @@ import { dhakaDate, isoDateOnly } from '../utils/dates.js';
 import * as reportService from '../services/report.service.js';
 import * as investorService from '../services/investor.service.js';
 import * as paymentService from '../services/payment.service.js';
+import * as certificateService from '../services/certificate.service.js';
 import * as audit from '../services/audit.service.js';
 
 function recordExport(action, entity, req, rows) {
@@ -158,6 +159,24 @@ export async function statementPrint(req, res) {
     footer: ['', '', formatBDT(data.totals.outstanding), '', '', 'outstanding'],
   });
   return html(res, markup, { filename: `statement-${investorId}.html` });
+}
+
+/** Membership certificate (print / save as PDF). */
+export async function certificatePrint(req, res) {
+  const investorId = Number(req.params.investorId);
+  const data = await certificateService.getCertificateData(investorId);
+  if (!data) throw notFound('Investor not found');
+  await audit.record({
+    action: audit.AUDIT_ACTIONS.CERTIFICATE_VIEWED,
+    entity: 'investor',
+    entityId: investorId,
+    meta: { certificate: data.certificateNo },
+    actor: req.admin,
+    req,
+  });
+  return html(res, certificateService.renderCertificateHtml(data, { autoPrint: String(req.query.print) === 'true' }), {
+    filename: `${data.certificateNo}.html`,
+  });
 }
 
 export async function paymentsPrint(req, res) {

@@ -23,6 +23,7 @@ import { AuditLog } from './pages/admin/AuditLog.jsx';
 import { SmsLog } from './pages/admin/SmsLog.jsx';
 import { SystemStatus } from './pages/admin/SystemStatus.jsx';
 import { Profile } from './pages/admin/Profile.jsx';
+import { SupportInbox } from './pages/admin/SupportInbox.jsx';
 import { NotFound } from './pages/NotFound.jsx';
 
 import { PayPage } from './pages/public/PayPage.jsx';
@@ -36,6 +37,8 @@ import { PortalInvestments } from './pages/portal/PortalInvestments.jsx';
 import { PortalInstallments } from './pages/portal/PortalInstallments.jsx';
 import { PortalPayments } from './pages/portal/PortalPayments.jsx';
 import { PortalAccount } from './pages/portal/PortalAccount.jsx';
+import { PortalWallet } from './pages/portal/PortalWallet.jsx';
+import { PortalSupport } from './pages/portal/PortalSupport.jsx';
 
 /** Investor portal subtree gets its own auth provider (separate session). */
 function PortalShell() {
@@ -73,6 +76,8 @@ export default function App() {
               <Route path="/portal/investments" element={<PortalInvestments />} />
               <Route path="/portal/installments" element={<PortalInstallments />} />
               <Route path="/portal/payments" element={<PortalPayments />} />
+              <Route path="/portal/wallet" element={<PortalWallet />} />
+              <Route path="/portal/support" element={<PortalSupport />} />
               <Route path="/portal/account" element={<PortalAccount />} />
             </Route>
           </Route>
@@ -96,6 +101,7 @@ export default function App() {
             <Route path="/payments" element={<PaymentsList />} />
             <Route path="/reports/collections" element={<ReportsCollections />} />
             <Route path="/reports/due" element={<ReportsDue />} />
+            <Route path="/support" element={<SupportInbox />} />
             <Route path="/admins" element={<ProtectedRoute roles={['SUPER_ADMIN']}><Admins /></ProtectedRoute>} />
             <Route path="/audit" element={<ProtectedRoute roles={['SUPER_ADMIN']}><AuditLog /></ProtectedRoute>} />
             <Route path="/sms" element={<ProtectedRoute roles={['SUPER_ADMIN']}><SmsLog /></ProtectedRoute>} />

@@ -20,5 +20,6 @@ router.get('/today', asyncHandler(ctrl.today));
 router.get('/investors/:investorId/statement', asyncHandler(ctrl.statement));
 router.get('/investors/:investorId/statement.csv', asyncHandler(ctrl.statementCsvExport));
 router.get('/investors/:investorId/statement.html', asyncHandler(ctrl.statementPrint));
+router.get('/investors/:investorId/certificate.html', asyncHandler(ctrl.certificatePrint));
 
 export default router;

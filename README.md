@@ -148,17 +148,55 @@ investor must replace it at first sign-in.
 
 **What investors can do after signing in:**
 
-* **Overview** — dues now, next installment, total paid/remaining, the green
-  account-summary card, profile completeness, upcoming installments with
-  **Pay now** (the normal bKash pay-link flow), recent payments + receipts.
-* **My profile** — personal/contact/address details (father/husband & mother
-  names, date of birth, gender, religion, education, present/permanent
-  address), documents (photo + NID scan Upload/view, stored encrypted),
-  nominees (read-only), membership info.
-* **Investments / Installments / Payments** — own records only, with progress,
-  overdue state, receipts and a downloadable statement CSV.
+* **Overview** — live wallet balance, dues now, next installment, pension
+  progress bars (paid / total installments, %), profile completeness, alert
+  banners (overdue, month due, documents, wallet requests) and upcoming
+  installments with **Pay now** (the normal bKash pay-link flow).
+* **My profile** — the same eight tabs the office sees: **Profile · Pension
+  Enrollments · Pension Installments · Wallet · Transactions · Payments ·
+  Nominees · Change Password**. Every missing field is an inline *“+ Add”*
+  trigger (name in Bangla, father/husband, mother, DOB, religion, education,
+  present/permanent address, email, alternate mobile) instead of a dead
+  “N/A”. Profile completeness shows what is still missing.
+* **Documents** — drag & drop dropzones for photo, NID front, NID back and
+  signature, with in-browser cropping, preview, upload progress and the
+  review status (pending / verified / rejected + reviewer note). NID and
+  signature bytes are encrypted at rest and served only to the owner and
+  Super Admins; nominee photos are uploaded per nominee.
+* **Wallet** — current balance, available balance, total earned / deposited /
+  withdrawn, one-click deposit and withdrawal requests with Pending /
+  Approved / Rejected tracking and the office’s decision note. Pending
+  withdrawals reduce the available balance immediately.
+* **Support** — open an in-app inquiry (category + priority), chat with the
+  office in a threaded conversation, reopen a resolved thread by replying and
+  close it when done. The same tickets appear in the staff **Support inbox**
+  (`/support`), where they can be answered and moved through
+  OPEN → IN_PROGRESS → RESOLVED → CLOSED.
+* **Printable documents** — print-ready investment statement, membership
+  certificate and per-payment receipts (use the browser’s *Print → Save as
+  PDF*). Every view is audited.
 * **Account & password** — change password (≥8 chars with a letter and a
   digit; never the mobile number or member code), see/revoke other sessions.
+
+**What staff get in the admin app:**
+
+* The unified investor profile mirrors the portal tab for tab, adds the
+  **Wallet** panel (manual ledger entry, approve / reject pending requests,
+  ledger timeline), membership approval, account freeze / unfreeze with a
+  reason (freezing revokes live portal sessions), and Super-Admin document
+  audit with **Verify / Reject** overlays.
+* Payment / due alert banners (“N overdue installments · ৳X”, “Due in the next
+  7 days”, pending wallet requests, open inquiries) on the dashboard and on
+  each investor profile.
+* **Support inbox** at `/support` lists every inquiry with filters and the
+  full conversation, and links straight to the investor profile.
+
+Document storage: photo / NID / signature bytes live in the managed
+libSQL database, not in a public bucket. NID front/back, signature and nominee
+photos are AES-256-GCM ciphertext with per-investor AAD; NID and signature
+reads are Super-Admin-only and audited. Cloudinary/S3 is deliberately not wired
+up (NID material must not leave the managed database); `document.service.js` is
+the single seam where an object-store driver would be added.
 
 Security: scrypt password hashes, server-side sessions (SHA-256 token at
 rest) in a **separate table and cookie** from admins, rotation, per-account

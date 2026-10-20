@@ -30,6 +30,31 @@ router.patch('/:id/nominees/:nomineeId', requireSuperAdmin, asyncHandler(ctrl.up
 router.get('/:id/nid', requireSuperAdmin, asyncHandler(ctrl.revealNid));
 router.get('/:id/nominees/:nomineeId/nid', requireSuperAdmin, asyncHandler(ctrl.revealNomineeNid));
 
+// Wallet: staff read the ledger, accountants post entries and decide requests.
+router.get('/:id/wallet', asyncHandler(ctrl.wallet));
+router.post('/:id/wallet/transactions', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), asyncHandler(ctrl.recordWalletEntry));
+router.post('/:id/wallet/transactions/:txId/decide', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), asyncHandler(ctrl.decideWalletTransaction));
+
+// Document slots + verification workflow.
+router.get('/:id/documents', asyncHandler(ctrl.listDocuments));
+router.post(
+  '/:id/documents/:kind',
+  requireRole('SUPER_ADMIN', 'ACCOUNTANT'),
+  photoUpload,
+  scanUpload,
+  ensureRawBody,
+  asyncHandler(ctrl.uploadDocument),
+);
+router.get('/:id/documents/:kind/file', asyncHandler(ctrl.documentFile));
+router.post('/:id/documents/:kind/review', requireSuperAdmin, asyncHandler(ctrl.reviewDocument));
+router.post('/:id/nominees/:nomineeId/photo', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), photoUpload, ensureRawBody, asyncHandler(ctrl.uploadNomineePhoto));
+router.get('/:id/nominees/:nomineeId/photo', asyncHandler(ctrl.nomineePhotoFile));
+router.post('/:id/nominees/:nomineeId/photo/review', requireSuperAdmin, asyncHandler(ctrl.reviewNomineePhoto));
+
+// Membership approval + account freeze (Super Admin controls).
+router.post('/:id/membership', requireSuperAdmin, asyncHandler(ctrl.decideMembership));
+router.post('/:id/freeze', requireSuperAdmin, asyncHandler(ctrl.setFrozen));
+
 // Files
 router.get('/:id/photo', asyncHandler(ctrl.getPhoto));
 router.post('/:id/photo', requireRole('SUPER_ADMIN', 'ACCOUNTANT'), photoUpload, ensureRawBody, asyncHandler(ctrl.uploadPhoto));

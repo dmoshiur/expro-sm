@@ -38,12 +38,18 @@ export function Button({ variant = '', size = '', ...props }) {
 }
 
 export function Field({ label, error, help, children, hint }) {
+  const child = children
+    ? {
+        ...children,
+        props: { ...children.props, 'aria-invalid': error ? 'true' : undefined },
+      }
+    : null;
   return (
     <div className="field">
       {label ? <label htmlFor={children?.props?.id}>{label}</label> : null}
-      {children}
+      {child}
       {hint ? <div className="help">{hint}</div> : null}
-      {error ? <div className="error">{error}</div> : null}
+      {error ? <div className="error" role="alert">{error}</div> : null}
       {help ? <div className="help">{help}</div> : null}
     </div>
   );
@@ -109,7 +115,7 @@ export function Modal({ title, children, onClose, footer, width }) {
   );
 }
 
-export function Table({ columns, rows, empty = 'No records found.', keyField = 'id', footer = null, rowClassName }) {
+export function Table({ columns, rows, empty = 'No records found.', keyField = 'id', footer = null, rowClassName, onRowClick = null }) {
   if (!rows?.length) return <EmptyState>{empty}</EmptyState>;
   return (
     <div className="table-wrap">
@@ -125,7 +131,23 @@ export function Table({ columns, rows, empty = 'No records found.', keyField = '
         </thead>
         <tbody>
           {rows.map((row, index) => (
-            <tr key={row[keyField] ?? index} className={rowClassName?.(row) ?? ''}>
+            <tr
+              key={row[keyField] ?? index}
+              className={`${rowClassName?.(row) ?? ''} ${onRowClick ? 'clickable' : ''}`}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              onKeyDown={
+                onRowClick
+                  ? (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onRowClick(row);
+                      }
+                    }
+                  : undefined
+              }
+              tabIndex={onRowClick ? 0 : undefined}
+              role={onRowClick ? 'button' : undefined}
+            >
               {columns.map((column) => (
                 <td key={column.key} className={`${column.align === 'right' ? 'num' : ''} ${column.mono ? 'mono' : ''}`}>
                   {column.render ? column.render(row, index) : row[column.key]}
@@ -203,14 +225,80 @@ export function StatusPill({ status }) {
   return <Badge status={status} />;
 }
 
-export function Tabs({ tabs, active, onChange }) {
+/**
+ * Responsive, accessible tab bar. On desktop it sticks under the top bar; on
+ * phones it becomes a horizontally scrollable row (no wrapping, no hamburger).
+ */
+export function TabBar({ tabs, active, onChange, className = '' }) {
   return (
-    <div className="inline" style={{ marginBottom: 14 }}>
+    <div className={`tabbar ${className}`} role="tablist" aria-label="Investor sections">
       {tabs.map((tab) => (
-        <button key={tab.key} type="button" className={`btn sm ${tab.key === active ? 'primary' : 'ghost'}`} onClick={() => onChange(tab.key)}>
+        <button
+          key={tab.key}
+          type="button"
+          role="tab"
+          id={`tab-${tab.key}`}
+          aria-selected={tab.key === active}
+          aria-controls={`tabpanel-${tab.key}`}
+          className={`tab ${tab.key === active ? 'active' : ''}`}
+          onClick={() => onChange(tab.key)}
+        >
+          {tab.icon ? <span aria-hidden="true">{tab.icon}</span> : null}
           {tab.label}
+          {tab.count !== undefined && tab.count !== null ? <span className="tab-count">{tab.count}</span> : null}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** Backwards-compatible alias used by older pages. */
+export function Tabs({ tabs, active, onChange }) {
+  return <TabBar tabs={tabs} active={active} onChange={onChange} />;
+}
+
+export function ProgressBar({ value = 0, tone = '', size = '', label = null }) {
+  const percent = Math.max(0, Math.min(100, Number(value) || 0));
+  return (
+    <div>
+      {label ? (
+        <div className="stat-line" style={{ borderBottom: 0, paddingBottom: 2 }}>
+          <span>{label}</span>
+          <strong>{percent}%</strong>
+        </div>
+      ) : null}
+      <div className={`progress ${tone} ${size}`} role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
+        <span style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+const BANNER_ICONS = { danger: '⚠', warn: '⏰', info: 'ℹ', ok: '✓', muted: '•' };
+
+export function Banner({ tone = 'info', title, children, action }) {
+  return (
+    <div className={`banner ${tone}`} role={tone === 'danger' ? 'alert' : 'status'}>
+      <div className="banner-icon" aria-hidden="true">{BANNER_ICONS[tone] ?? 'ℹ'}</div>
+      <div className="banner-body">
+        {title ? <div className="banner-title">{title}</div> : null}
+        {children ? <div className="banner-text">{children}</div> : null}
+      </div>
+      {action ? <div className="banner-action">{action}</div> : null}
+    </div>
+  );
+}
+
+export function Avatar({ name = '?', src = null, size = '' }) {
+  const initials = String(name)
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('');
+  if (src) return <img className={`avatar ${size}`} src={src} alt={name} style={{ objectFit: 'cover' }} />;
+  return (
+    <div className={`avatar ${size}`} aria-hidden="true">
+      {initials || '?'}
     </div>
   );
 }

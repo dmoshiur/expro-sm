@@ -15,6 +15,8 @@ import { deriveStatus } from './installment.service.js';
 import { issueToken, buildPayUrl } from './paylink.service.js';
 import { PROFILE_FIELDS } from './investor.service.js';
 import { memberCodeForId } from './investor-auth.service.js';
+import { getWalletSummary } from './wallet.service.js';
+import { getInvestorAlerts } from './alerts.service.js';
 import * as audit from './audit.service.js';
 
 const OPEN = `('PENDING','PARTIALLY_PAID','OVERDUE')`;
@@ -22,6 +24,7 @@ const OPEN = `('PENDING','PARTIALLY_PAID','OVERDUE')`;
 // Profile completeness checklist: what a "proper" member profile contains.
 const COMPLETION_CHECKS = [
   ['photo', 'Profile photo', (i) => Boolean(i.has_photo)],
+  ['name_bangla', 'Name (Bangla)', (i) => Boolean(i.name_bangla)],
   ['email', 'Email address', (i) => Boolean(i.email)],
   ['alternate_mobile', 'Alternate mobile', (i) => Boolean(i.alternate_mobile)],
   ['date_of_birth', 'Date of birth', (i) => Boolean(i.date_of_birth)],
@@ -52,6 +55,11 @@ export function ownProfileShape(row, nominees = []) {
     id: row.id,
     member_code: row.member_code ?? memberCodeForId(row.id),
     name: row.name,
+    name_bangla: row.name_bangla ?? null,
+    membership_status: row.membership_status ?? 'APPROVED',
+    membership_note: row.membership_note ?? null,
+    is_frozen: Boolean(row.frozen_at),
+    frozen_reason: row.frozen_reason ?? null,
     mobile: row.mobile,
     alternate_mobile: row.alternate_mobile ?? null,
     email: row.email ?? null,
@@ -69,6 +77,7 @@ export function ownProfileShape(row, nominees = []) {
     has_photo: Boolean(row.has_photo),
     has_nid_scan: Boolean(row.has_nid_scan),
     status: row.status,
+    created_at: row.created_at,
     member_since: row.created_at,
     last_login_at: row.last_login_at ?? null,
     password_changed_at: row.password_changed_at ?? null,
@@ -194,9 +203,13 @@ export async function getDashboard(investorId) {
 
   const totals = totalsRes.rows[0];
   const inst = instRes.rows[0];
+  const wallet = await getWalletSummary(investorId);
+  const alerts = await getInvestorAlerts(investorId);
   return {
     profile,
     completion,
+    wallet,
+    alerts,
     summary: {
       total_invested: Number(totals.total_invested),
       total_paid: Number(inst.total_paid),
@@ -303,6 +316,15 @@ export async function issueOwnPayLink(investorId, installmentId, req) {
   if (!own.rows[0]) throw notFound('Installment not found');
   if (['PAID', 'WAIVED', 'CANCELLED'].includes(own.rows[0].status)) {
     throw badRequest('This installment is already settled');
+  }
+  const account = await query('select status, frozen_at, membership_status, deleted_at from investors where id = ?1', [investorId]);
+  const investor = account.rows[0];
+  if (!investor || investor.deleted_at || investor.status !== 'ACTIVE') {
+    throw badRequest('This member account cannot start a payment. Please contact the office.');
+  }
+  if (investor.frozen_at) throw badRequest('This account is frozen. Please contact the office.');
+  if (investor.membership_status === 'REJECTED') {
+    throw badRequest('Membership verification is incomplete. Please contact the office.');
   }
   const issued = await issueToken(installmentId, { actor: null, req });
   return { token: issued.token, url: issued.url ?? buildPayUrl(issued.token), path: `/pay/${issued.token}`, expires_at: issued.token_expires_at };

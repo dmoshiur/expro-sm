@@ -8,6 +8,8 @@ const NAV = [
   { to: '/portal/investments', label: 'Investments', icon: '▦' },
   { to: '/portal/installments', label: 'Installments', icon: '≡' },
   { to: '/portal/payments', label: 'Payments', icon: '৳' },
+  { to: '/portal/wallet', label: 'Wallet', icon: '◈' },
+  { to: '/portal/support', label: 'Support', icon: '✉' },
   { to: '/portal/account', label: 'Account & password', icon: '⚙' },
 ];
 
