@@ -6,9 +6,17 @@
  * `bg-brand-gradient` / `bg-brand-hero` backgrounds for hero + header surfaces,
  * `shadow-soft` for low-spread card shadows, and `rounded-2xl` for cards.
  */
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ['./index.html', './src/**/*.{js,jsx}'],
+  content: [
+    resolve(__dirname, 'index.html'),
+    resolve(__dirname, 'src/**/*.{js,jsx}'),
+  ],
   corePlugins: {
     preflight: false,
   },
