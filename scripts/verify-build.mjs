@@ -43,6 +43,16 @@ const css = assets.filter(f => f.endsWith('.css'));
 if (js.length === 0) fail('No JavaScript chunks found in client/dist/assets');
 if (css.length === 0) fail('No CSS chunks found in client/dist/assets');
 
+for (const cssFile of css) {
+  const cssContent = readFileSync(join(ASSETS, cssFile), 'utf8');
+  if (cssContent.trim().length === 0) {
+    fail(`CSS chunk ${cssFile} is empty`);
+  }
+  if (cssContent.includes('@tailwind ')) {
+    fail(`CSS chunk ${cssFile} contains uncompiled @tailwind directives – PostCSS/Tailwind did not run`);
+  }
+}
+
 const html = readFileSync(INDEX, 'utf8');
 if (!html.includes('/assets/')) fail('index.html does not reference /assets/ – unexpected Vite output');
 if (!html.includes('Investor Installment Portal')) fail('index.html title missing');

@@ -8,12 +8,12 @@ services:
     name: expro-sm
     env: node
     plan: free
-    # Build writes client/dist (Vite) and verifies it. `npm ci` must run with
-    # devDependencies (vite, react) so that the build succeeds; the verification
-    # step fails the build with a clear error rather than silently deploying a
-    # 503 frontend. `NPM_CONFIG_PRODUCTION=false` guarantees dev deps are kept
-    # for the build step even when NODE_ENV=production.
-    buildCommand: npm ci && npm run build
+    # Build writes client/dist (Vite + Tailwind/PostCSS) and verifies it.
+    # `--include=dev` keeps build-time devDependencies (vite, tailwindcss,
+    # postcss, autoprefixer) even when NODE_ENV=production, and `prebuild`
+    # (`scripts/ensure-deps.mjs`) also self-heals cached `node_modules` when
+    # a Render service uses `npm run build` directly as its Build Command.
+    buildCommand: npm ci --include=dev && npm run build
     # Migrations are additive and idempotent, so run them on every boot: this
     # guarantees new schema (e.g. 002_investor_portal_login.sql) is applied
     # before the server starts accepting traffic. If your Render plan exposes
@@ -39,11 +39,6 @@ services:
         value: 1
       - key: LOG_LEVEL
         value: info
-      # Ensure the build step keeps devDependencies (vite) even though
-      # NODE_ENV=production. Without this, `npm ci` could be run as
-      # `npm ci --production` on some images and vite would be missing.
-      - key: NPM_CONFIG_PRODUCTION
-        value: false
 
       # --- Required secrets (set in Render dashboard → Environment, do NOT
       #     commit values here). They are marked `sync: false` so this file
